@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CompletionDecision",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "decision_id": { "type": "string", "minLength": 1 },
+    "feature_id": { "type": "string", "minLength": 1 },
+    "spec_digest": { "type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$" },
+    "commit_sha": { "type": "string", "pattern": "^[a-fA-F0-9]{7,64}$" },
+    "test_digest": { "type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$" },
+    "policy_version": { "type": ["string", "integer"] },
+    "verification_report_id": { "type": "string", "minLength": 1 },
+    "authority": { "const": "deterministic_policy_engine" },
+    "decision": { "enum": ["APPROVE", "REJECT"] },
+    "resulting_status": { "enum": ["DONE", "REWORK_REQUIRED", "BLOCKED", "NEEDS_HUMAN", "STALE"] },
+    "failed_predicates": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "input_artifact_digests": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$" } },
+    "decided_at": { "type": "string", "format": "date-time" }
+  },
+  "required": [
+    "decision_id",
+    "feature_id",
+    "spec_digest",
+    "commit_sha",
+    "test_digest",
+    "policy_version",
+    "verification_report_id",
+    "authority",
+    "decision",
+    "resulting_status",
+    "failed_predicates",
+    "input_artifact_digests",
+    "decided_at"
+  ],
+  "allOf": [
+    {
+      "if": { "properties": { "decision": { "const": "APPROVE" } }, "required": ["decision"] },
+      "then": {
+        "properties": {
+          "resulting_status": { "const": "DONE" },
+          "failed_predicates": { "maxItems": 0 }
+        }
+      }
+    }
+  ]
+}

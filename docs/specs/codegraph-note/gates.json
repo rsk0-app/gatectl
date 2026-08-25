@@ -1,0 +1,45 @@
+[
+  {
+    "gate": "L",
+    "status": "PASS",
+    "digest": "ae0cf7152876828de3ef7618eb4eed6157729bbab72d8a30311a5c2c7535c0ef",
+    "tree": "8b77f3a5a4bdfcec3b90cfff053e51791f396c1d",
+    "at": "2026-08-20T06:26:16.060Z"
+  },
+  {
+    "gate": "R",
+    "status": "PASS",
+    "digest": "ae0cf7152876828de3ef7618eb4eed6157729bbab72d8a30311a5c2c7535c0ef",
+    "tree": "dc6471a891518687424f9b7df26409e719896e48",
+    "tests": "a4b89f4413b1357d6711253b7f16bcc5cbbdc429ae8449a6c13ad346b4093479",
+    "at": "2026-08-20T06:26:39.618Z"
+  },
+  {
+    "gate": "Gfast",
+    "status": "NOT_EVALUATED",
+    "digest": "ae0cf7152876828de3ef7618eb4eed6157729bbab72d8a30311a5c2c7535c0ef",
+    "tree": "bd632cb5c86a3eaaf9c6709c17d28be9075d56b7",
+    "at": "2026-08-20T06:26:59.181Z"
+  },
+  {
+    "gate": "Gfull",
+    "status": "NOT_EVALUATED",
+    "digest": "ae0cf7152876828de3ef7618eb4eed6157729bbab72d8a30311a5c2c7535c0ef",
+    "tree": "bd632cb5c86a3eaaf9c6709c17d28be9075d56b7",
+    "at": "2026-08-20T06:26:59.460Z"
+  },
+  {
+    "gate": "Gfast",
+    "status": "PASS",
+    "digest": "ae0cf7152876828de3ef7618eb4eed6157729bbab72d8a30311a5c2c7535c0ef",
+    "tree": "ba7aee9be7557e736f693c9385ac12c94bd94fa7",
+    "at": "2026-08-20T06:33:28.654Z"
+  },
+  {
+    "gate": "Gfull",
+    "status": "PASS",
+    "digest": "ae0cf7152876828de3ef7618eb4eed6157729bbab72d8a30311a5c2c7535c0ef",
+    "tree": "ba7aee9be7557e736f693c9385ac12c94bd94fa7",
+    "at": "2026-08-20T06:33:47.719Z"
+  }
+]

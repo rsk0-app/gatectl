@@ -1,0 +1,67 @@
+feature: AUTH-042
+tasks:
+  - id: AUTH-042-1
+    feature_id: AUTH-042
+    description: Implement GitHub OAuth provider abstraction.
+    depends_on: []
+    allowed_paths:
+      - "src/auth/providers/**"
+    requirement_ids:
+      - AUTH-001
+      - AUTH-002
+    acceptance_criteria:
+      - Invalid OAuth state is rejected.
+      - OAuth state cannot be consumed twice.
+    done_conditions:
+      - Required tests pass without changing locked acceptance tests.
+      - Completion candidate contains code, test, and evidence references.
+    required_evidence_types:
+      - TEST
+      - DIFF
+    verification_commands:
+      - pnpm test --filter auth
+    verifies:
+      - AUTH-001
+      - AUTH-002
+
+  - id: AUTH-042-2
+    feature_id: AUTH-042
+    description: Implement login UI.
+    depends_on:
+      - AUTH-042-1
+    allowed_paths:
+      - "src/ui/auth/**"
+    requirement_ids:
+      - AUTH-003
+    acceptance_criteria:
+      - Existing password login regression suite remains green.
+    done_conditions:
+      - Required tests pass without changing locked acceptance tests.
+    required_evidence_types:
+      - TEST
+      - DIFF
+    verification_commands:
+      - pnpm test --filter auth-ui
+    verifies:
+      - AUTH-003
+
+  - id: AUTH-042-3
+    feature_id: AUTH-042
+    description: Add required observability.
+    depends_on:
+      - AUTH-042-1
+    allowed_paths:
+      - "src/auth/**"
+    requirement_ids:
+      - AUTH-004
+    acceptance_criteria:
+      - OAuth tokens are absent from application logs.
+    done_conditions:
+      - Logging test and adversarial review pass.
+    required_evidence_types:
+      - TEST
+      - REVIEW
+    verification_commands:
+      - pnpm test --filter oauth-logging
+    verifies:
+      - AUTH-004

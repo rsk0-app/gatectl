@@ -1,0 +1,39 @@
+feature_id: ""
+spec_digest: ""
+
+requirement_coverage:
+  - requirement_id: "REQ-001"
+    priority: MUST
+    applicability: APPLICABLE
+    invariant_ids: []
+    test_obligations: []
+    required_evidence_types: []
+
+tests:
+  unit: []
+  integration: []
+  contract: []
+  security: []
+  regression: []
+  e2e: []
+  property_based: []
+  failure_injection: []
+
+red_expectations: []
+anti_cheating_checks:
+  forbid_skip: true
+  forbid_only: true
+  forbid_todo_tests: true
+  forbid_vacuous_assertions: true
+  forbid_mocking_away_required_behavior: true
+
+completion_falsification_scenarios: []
+
+evidence_freshness_inputs:
+  - spec_digest
+  - commit_sha
+  - acceptance_test_digest
+  - dependency_digest
+  - generated_contract_digest
+  - decision_configuration_digest
+  - policy_version

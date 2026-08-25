@@ -1,0 +1,32 @@
+report_id: AUTH-042-VERIFY-1
+candidate_id: AUTH-042-CANDIDATE-1
+feature_id: AUTH-042
+spec_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+verifier:
+  run_id: RUN-OPENAI-202
+  provider: openai
+  model: example-model
+  independent_from_implementation_run: true
+  opposite_provider: true
+
+decision: VERIFIED
+
+checks:
+  spec_digest_matches: true
+  commit_sha_matches: true
+  traceability_coverage_percent: 100
+  must_requirements_verified_percent: 100
+  required_evidence_fresh_percent: 100
+  deterministic_validations_passed: true
+  acceptance_tests_unchanged_or_approved: true
+  scope_matches_declaration: true
+
+findings: []
+unresolved_blocking_findings: 0
+unapproved_waivers: 0
+undeclared_scope_changes: 0
+repair_loop: 0
+evidence_refs:
+  - EVIDENCE-AUTH-VERIFY-1

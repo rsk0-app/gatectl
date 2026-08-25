@@ -1,0 +1,31 @@
+report_id: ""
+candidate_id: ""
+feature_id: ""
+spec_digest: "sha256:"
+commit_sha: ""
+
+verifier:
+  run_id: ""
+  provider: ""
+  model: ""
+  independent_from_implementation_run: true
+  opposite_provider: false
+
+decision: REWORK_REQUIRED
+
+checks:
+  spec_digest_matches: false
+  commit_sha_matches: false
+  traceability_coverage_percent: 0
+  must_requirements_verified_percent: 0
+  required_evidence_fresh_percent: 0
+  deterministic_validations_passed: false
+  acceptance_tests_unchanged_or_approved: false
+  scope_matches_declaration: false
+
+findings: []
+unresolved_blocking_findings: 0
+unapproved_waivers: 0
+undeclared_scope_changes: 0
+repair_loop: 0
+evidence_refs: []

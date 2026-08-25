@@ -1,0 +1,20 @@
+candidate_id: ""
+feature_id: ""
+task_id: ""
+spec_digest: "sha256:"
+commit_sha: ""
+status: READY_FOR_VERIFICATION
+
+implementer:
+  run_id: ""
+  provider: ""
+  model: ""
+
+requirement_claims: []
+validation_results: []
+changed_files: []
+remaining_work: []
+blockers: []
+deviations: []
+scope_changes: []
+evidence_refs: []

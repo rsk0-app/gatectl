@@ -1,0 +1,48 @@
+{
+  "name": "gatectl",
+  "version": "0.14.0",
+  "type": "module",
+  "bin": {
+    "gatectl": "bin/gatectl.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.0"
+  },
+  "description": "A gate engine that decides, by policy and exit code, whether work may be called done \u2014 the control plane for what an AI agent may call done.",
+  "license": "Apache-2.0",
+  "keywords": [
+    "gate",
+    "policy",
+    "ci",
+    "tdd",
+    "red-green",
+    "ai-agents",
+    "code-review",
+    "attestation",
+    "provenance"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rsk0-app/gatectl.git"
+  },
+  "files": [
+    "bin",
+    "src",
+    "templates",
+    "policies",
+    "schemas",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ]
+}

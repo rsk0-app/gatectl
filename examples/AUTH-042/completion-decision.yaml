@@ -1,0 +1,14 @@
+decision_id: AUTH-042-DECISION-1
+feature_id: AUTH-042
+spec_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+test_digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+policy_version: 2
+verification_report_id: AUTH-042-VERIFY-1
+authority: deterministic_policy_engine
+decision: APPROVE
+resulting_status: DONE
+failed_predicates: []
+input_artifact_digests:
+  - "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+decided_at: "2026-08-18T12:00:00Z"

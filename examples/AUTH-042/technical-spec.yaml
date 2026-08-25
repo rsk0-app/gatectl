@@ -1,0 +1,51 @@
+feature: AUTH-042
+title: GitHub SSO
+status: LOCKED
+spec_version: 4
+spec_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+goals:
+  - Users can authenticate through GitHub.
+
+non_goals:
+  - GitHub organization synchronization.
+
+requirements:
+  - id: AUTH-001
+    priority: MUST
+    applicability: APPLICABLE
+    behavior: OAuth state must be validated.
+  - id: AUTH-002
+    priority: MUST
+    applicability: APPLICABLE
+    behavior: OAuth state is single-use.
+  - id: AUTH-003
+    priority: MUST
+    applicability: APPLICABLE
+    behavior: Existing password login must not regress.
+  - id: AUTH-004
+    priority: MUST
+    applicability: APPLICABLE
+    behavior: OAuth tokens must never be logged.
+
+invariants:
+  - id: AUTH-001
+    rule: OAuth state must be validated.
+  - id: AUTH-002
+    rule: OAuth state is single-use.
+  - id: AUTH-003
+    rule: Existing password login must not regress.
+  - id: AUTH-004
+    rule: OAuth tokens must never be logged.
+
+rollout:
+  strategy: feature_flag
+  stages:
+    - internal
+    - 5_percent
+    - 25_percent
+    - 100_percent
+
+rollback:
+  disable_feature_flag: true
+  schema_backward_compatible: true

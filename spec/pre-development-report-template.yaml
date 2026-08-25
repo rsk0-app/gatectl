@@ -1,0 +1,61 @@
+feature_id: ""
+generated_at: ""
+
+requirements:
+  complete: false
+
+architecture:
+  analyzed: false
+  evidence: []
+
+dependencies:
+  analyzed: false
+
+security:
+  analyzed: false
+  findings: []
+
+data:
+  applicable: false
+  analyzed: false
+
+compatibility:
+  analyzed: false
+
+concurrency:
+  applicable: false
+  analyzed: false
+
+failure_modes:
+  analyzed: false
+
+observability:
+  defined: false
+
+rollout:
+  defined: false
+
+rollback:
+  defined: false
+
+testing:
+  acceptance_criteria_complete: false
+  invariants_testable: false
+
+unknowns: []
+
+assumptions: []
+
+risks: []
+
+evidence: []
+
+implementation_gate:
+  allowed: false
+
+completion_design:
+  requirement_ids_assigned: false
+  applicability_defined: false
+  deterministic_validations_defined: false
+  required_verifiers_defined: false
+  evidence_freshness_inputs_defined: false

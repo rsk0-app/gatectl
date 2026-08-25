@@ -1,0 +1,86 @@
+# templates/policy.yaml — rda policy for this target. Meta-class: agents never edit this file.
+version: 1
+unmatched_tier: A
+tiers:
+  A:
+    # templates/policy.yaml is the default ceremony for every target rda is installed into —
+    # a weakened tier there weakens gating in repositories nobody in this one is looking at.
+    paths: ["supabase/migrations/**", "**/migrations/**", "src/app/api/**", "src/lib/auth/**", "src/lib/stripe/**", "middleware.ts", "templates/policy.yaml"]
+    requires: [L, R, Gfull, X]
+  B:
+    paths: ["src/**", "bin/**", "templates/**", "scripts/**", "test/**", "e2e/**", "package.json"]
+    requires: [L, R, Gfull]
+  C:
+    paths: ["docs/**", "**/*.md", "**/*.css", "public/**"]
+    requires: [Gfast]
+# A command may be a shell template, or the literal `none`.
+#   missing / commented out  → UNKNOWN. The gate needing it answers NOT_EVALUATED (exit 2).
+#   none                     → this project has no such step. The gate skips it and says so.
+# The two are not interchangeable: `none` is a declaration you are making, in a file agents
+# never edit. `test_file` is never `none` — gate R runs every required test through it, and
+# skipping there would mean never confirming RED.
+commands:
+  typecheck: none # this project has no such step — gates skip it
+  build: none # this project has no such step — gates skip it
+  test_all: "npm test"
+  # Only used by `rda verify --rerun`, which re-runs the gates in a fresh worktree at a commit.
+  # Dependencies are not in git, so without this the re-run fails on a missing node_modules
+  # rather than on the code. `none` if this project needs no install step.
+  install: "npm ci" # verify --rerun works in a bare worktree; dependencies are not in git
+  test_file: "npx vitest run {file}"
+  test_related: "npx vitest related --run {files}"
+  # Runs ONE named case, for acceptance criteria written as `test/x.test.ts::"the case name"`.
+  # Unset, such a criterion is NOT_EVALUATED: running the whole file would answer a different
+  # question — that SOMETHING in it failed — and record it under this criterion's name.
+  test_case: "npx vitest run {file} -t {selector}"
+failure_classes:
+  # "X is not a function" is the canonical first RED of TDD: the test loaded and ran, and failed
+  # because the thing it names does not exist yet. It is a real RED, not a broken harness — a
+  # genuinely broken test file fails to load and is caught by the load class below instead.
+  assertion: ["^\\s*AssertionError", "^\\s*\\w*Error: expected .* to ", "^\\s*TypeError: \\w+ is not a function$"]
+  load: ["Cannot find module", "SyntaxError", "Failed to load", "ReferenceError", "Failed to resolve"]
+  # A run that executed no matching test proves nothing — and this is the failure mode that
+  # lies: `vitest run file -t "no such case"` exits 0 having skipped everything, which reads as
+  # "this test already passes" unless the emptiness is recognised for what it is.
+  empty: ["^\\s*Test Files\\s+\\d+ skipped", "No test files found", "No tests found"]
+# Who writes the code here. Gate X refuses a review by this model: whatever else a review is,
+# it is not one when the author does it. Naming it is the only way rda can tell — a reviewer
+# reports its own identity, and rda compares the two.
+implementer:
+  model: claude
+critic:
+  cli: codex
+  # model: pin one only if your account carries it — an unservable pin fails the critic outright,
+  # and a critic that cannot run blocks gate L. Unpinned, the CLI uses its own default.
+  required_for_tiers: [A, B]
+# Gate X: a SECOND model reviews the implementation diff, once it exists. Point it at a
+# different model than `critic` — rda refuses a review when both report the same one, because
+# one opinion twice is not a cross-model review. Without this block, `rda review` refuses to run
+# and gate X stays NOT_EVALUATED: fail-closed, never satisfied by whatever CLI is installed.
+# The review is written outside this repository (a review of a tree must not change that tree);
+# `rda review` prints where.
+reviewer:
+  cli: codex
+  # model: pin a different one from critic.model above.
+  # If your account cannot serve a second model — a ChatGPT-account codex refuses every -m —
+  # point the reviewer at a different CLI instead and give its flags verbatim; the prompt is
+  # appended last:
+  #   cli: claude
+  #   args: ["-p", "--model", "claude-opus-4-6"]
+# Optional. Publishes each feature's delivery record to a TencentDB Agent Memory wiki via
+# `rda export`, and lets `rda critique` recall prior records. No gate ever reads from memory —
+# unconfigured or unreachable, every gate answers exactly as it does today.
+# Credentials are NEVER read from this file, which is committed: export TDAM_API_KEY and
+# TDAM_SERVICE_ID in the environment instead.
+# memory:
+#   endpoint: "http://localhost:8421/v3"
+#   team_id: "team-xxxx"
+#   wiki_name: "delivery-record"   # defaults to this repository's directory name
+meta_class:
+  - ".gatectl/**"
+  # The CI job that re-runs the gates, and the public key its verdicts are checked against. An
+  # agent that can edit either can disarm its own referee, so touching them is a named G-full
+  # failure rather than an ordinary change.
+  - ".github/workflows/gatectl-verify.yml"
+  - ".github/workflows/rda-verify.yml"
+  - "docs/specs/**/spec.lock.json"

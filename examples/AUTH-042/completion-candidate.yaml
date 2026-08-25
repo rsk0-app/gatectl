@@ -1,0 +1,56 @@
+candidate_id: AUTH-042-CANDIDATE-1
+feature_id: AUTH-042
+task_id: AUTH-042-INTEGRATED
+spec_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+status: READY_FOR_VERIFICATION
+
+implementer:
+  run_id: RUN-CLAUDE-101
+  provider: anthropic
+  model: example-model
+
+requirement_claims:
+  - requirement_id: AUTH-001
+    claim: IMPLEMENTED
+    code_refs: ["src/auth/providers/github.ts#validateState"]
+    test_refs: [AUTH-T001]
+    evidence_refs: [EVIDENCE-AUTH-T001]
+    waiver_id: null
+  - requirement_id: AUTH-002
+    claim: IMPLEMENTED
+    code_refs: ["src/auth/providers/github.ts#consumeState"]
+    test_refs: [AUTH-T002]
+    evidence_refs: [EVIDENCE-AUTH-T002]
+    waiver_id: null
+  - requirement_id: AUTH-003
+    claim: IMPLEMENTED
+    code_refs: ["src/ui/auth/login.tsx"]
+    test_refs: [AUTH-T003]
+    evidence_refs: [EVIDENCE-AUTH-T003]
+    waiver_id: null
+  - requirement_id: AUTH-004
+    claim: IMPLEMENTED
+    code_refs: ["src/auth/oauth-logger.ts"]
+    test_refs: [AUTH-T004]
+    evidence_refs: [EVIDENCE-AUTH-T004]
+    waiver_id: null
+
+validation_results:
+  - command: pnpm test
+    exit_code: 0
+    artifact_digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+changed_files:
+  - src/auth/providers/github.ts
+  - src/ui/auth/login.tsx
+  - src/auth/oauth-logger.ts
+remaining_work: []
+blockers: []
+deviations: []
+scope_changes: []
+evidence_refs:
+  - EVIDENCE-AUTH-T001
+  - EVIDENCE-AUTH-T002
+  - EVIDENCE-AUTH-T003
+  - EVIDENCE-AUTH-T004

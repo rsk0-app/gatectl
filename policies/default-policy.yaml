@@ -1,0 +1,85 @@
+version: 2
+
+implementation_requires:
+  - SPEC_LOCKED
+  - RED_CONFIRMED
+
+spec_lock_requires:
+  blocking_unknowns: 0
+  blocking_ambiguities: 0
+  contradictions: 0
+  critical_security_findings: 0
+  high_security_findings: 0
+  acceptance_coverage_percent: 100
+  important_invariant_testability_percent: 100
+  rollout_defined: true
+  rollback_defined: true
+
+permissions:
+  discovery:
+    repository: read_only
+    spec: write
+
+  tdd:
+    repository: read_only
+    tests: write
+    acceptance_tests: write
+
+  implementation:
+    repository: scoped_write
+    acceptance_tests: read_only
+
+mandatory_reviews:
+  security:
+    paths:
+      - "auth/**"
+      - "permissions/**"
+      - "crypto/**"
+      - "payments/**"
+      - "infra/**"
+      - "secrets/**"
+
+  migration:
+    paths:
+      - "migrations/**"
+      - "**/schema.*"
+
+  public_api:
+    paths:
+      - "openapi/**"
+      - "graphql/**"
+      - "proto/**"
+      - "sdk/**"
+
+limits:
+  max_review_loops: 3
+  max_completion_repair_loops: 3
+  default_no_progress_turns: 8
+
+completion:
+  implementer_terminal_status: READY_FOR_VERIFICATION
+  implementer_may_self_verify: false
+  completion_authority: deterministic_policy_engine
+  verifier_independence_required: true
+  opposite_provider_required_for_high_risk: true
+  traceability_coverage_percent: 100
+  must_requirements_verified_percent: 100
+  fresh_evidence_percent: 100
+  unresolved_blocking_findings: 0
+  unapproved_waivers: 0
+  undeclared_scope_changes: 0
+  acceptance_test_changes_require_approval: true
+  reverify_on:
+    - spec_digest_change
+    - commit_sha_change
+    - acceptance_test_digest_change
+    - dependency_digest_change
+    - generated_contract_digest_change
+    - decision_configuration_digest_change
+  on_repair_limit_exhausted: NEEDS_HUMAN
+
+forbidden_commands:
+  - "terraform destroy"
+  - "kubectl delete namespace"
+  - "DROP DATABASE"
+  - "rm -rf /"

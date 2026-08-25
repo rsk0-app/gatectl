@@ -1,0 +1,13 @@
+# templates/MVP.yaml — the project ceiling. HUMAN-ONLY: the agent reads, never writes.
+# Approved by the owner 2026-08-20.
+mvp_done_when:
+  - id: gate-decides
+    text: "An operator can run rda commit-check in a target repo and get a trustworthy 0/1/2"
+  - id: memory-round-trip
+    text: "A delivered feature's record reaches team memory and a later critique recalls it"
+out_of_scope:
+  - "Any gate reading from a network service — gates stay a function of files on disk"
+  - "rda producing code structure (symbols, call graphs, impact) — indexers do that, agents consume it"
+  - "rda executing or fixing code — it decides, it does not implement"
+  - "Multi-repo orchestration — rda is a guest in one target repo at a time"
+  - "A UI of any kind — exit codes are the API"

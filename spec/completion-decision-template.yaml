@@ -1,0 +1,13 @@
+decision_id: ""
+feature_id: ""
+spec_digest: "sha256:"
+commit_sha: ""
+test_digest: "sha256:"
+policy_version: 2
+verification_report_id: ""
+authority: deterministic_policy_engine
+decision: REJECT
+resulting_status: REWORK_REQUIRED
+failed_predicates: []
+input_artifact_digests: []
+decided_at: ""

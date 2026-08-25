@@ -1,0 +1,34 @@
+feature_id: ""
+spec_version: 1
+spec_digest: ""
+
+requirements: []
+invariants: []
+test_obligations: []
+tasks: []
+
+permissions:
+  discovery:
+    repo: read_only
+  tdd:
+    tests: write
+    src: read_only
+  implementation:
+    tests_acceptance: read_only
+    src: scoped_write
+
+required_reviews: []
+
+rollout: {}
+rollback: {}
+
+done_conditions: []
+
+completion_protocol:
+  implementer_terminal_status: READY_FOR_VERIFICATION
+  verifier_independent: true
+  adversarial_verification_required: true
+  traceability_required: true
+  evidence_freshness_required: true
+  max_repair_loops: 3
+  completion_authority: deterministic_policy_engine

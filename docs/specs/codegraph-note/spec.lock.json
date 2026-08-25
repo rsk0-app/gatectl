@@ -1,0 +1,15 @@
+[
+  {
+    "version": 1,
+    "digest": "ae0cf7152876828de3ef7618eb4eed6157729bbab72d8a30311a5c2c7535c0ef",
+    "at": "2026-08-20T06:26:15.946Z",
+    "tier": "B",
+    "requiredTests": [
+      "test/readme-codegraph.test.mjs"
+    ],
+    "allowedPaths": [
+      "README.md",
+      "test/**"
+    ]
+  }
+]

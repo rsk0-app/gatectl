@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentBudget",
+  "type": "object",
+  "properties": {
+    "wall_clock": {
+      "type": "object",
+      "properties": {
+        "soft_seconds": {
+          "type": "integer"
+        },
+        "hard_seconds": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "soft_seconds",
+        "hard_seconds"
+      ]
+    },
+    "turns": {
+      "type": "object",
+      "properties": {
+        "soft": {
+          "type": "integer"
+        },
+        "hard": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "soft",
+        "hard"
+      ]
+    },
+    "tokens": {
+      "type": "object",
+      "properties": {
+        "soft": {
+          "type": "integer"
+        },
+        "hard": {
+          "type": "integer"
+        }
+      }
+    },
+    "cost_usd": {
+      "type": "object",
+      "properties": {
+        "soft": {
+          "type": "number"
+        },
+        "hard": {
+          "type": "number"
+        }
+      }
+    },
+    "tool_calls": {
+      "type": "object",
+      "properties": {
+        "soft": {
+          "type": "integer"
+        },
+        "hard": {
+          "type": "integer"
+        }
+      }
+    },
+    "files_changed": {
+      "type": "object",
+      "properties": {
+        "soft": {
+          "type": "integer"
+        },
+        "hard": {
+          "type": "integer"
+        }
+      }
+    }
+  },
+  "required": [
+    "wall_clock",
+    "turns"
+  ]
+}

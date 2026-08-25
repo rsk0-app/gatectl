@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentCheckpoint",
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string"
+    },
+    "spec_digest": {
+      "type": "string"
+    },
+    "completed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "remaining": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failing_tests": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "spec_conflicts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_action": {
+      "type": "string"
+    },
+    "open_finding_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "completion_candidate_status": {
+      "enum": [
+        "NOT_SUBMITTED",
+        "READY_FOR_VERIFICATION",
+        "REWORK_REQUIRED",
+        "VERIFIED",
+        "STALE"
+      ]
+    },
+    "repair_loop": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "task_id",
+    "spec_digest",
+    "completed",
+    "remaining",
+    "next_action",
+    "open_finding_ids",
+    "completion_candidate_status",
+    "repair_loop"
+  ]
+}

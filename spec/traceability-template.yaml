@@ -1,0 +1,15 @@
+feature_id: ""
+spec_digest: ""
+commit_sha: ""
+
+entries:
+  - requirement_id: "REQ-001"
+    priority: MUST
+    applicability: APPLICABLE
+    acceptance_criteria: []
+    invariant_ids: []
+    test_ids: []
+    code_refs: []
+    evidence_refs: []
+    waiver_id: null
+    status: UNVERIFIED

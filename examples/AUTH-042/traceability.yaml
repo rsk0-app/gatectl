@@ -1,0 +1,52 @@
+feature_id: AUTH-042
+spec_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+entries:
+  - requirement_id: AUTH-001
+    priority: MUST
+    applicability: APPLICABLE
+    acceptance_criteria:
+      - Invalid OAuth state is rejected.
+    invariant_ids: [AUTH-001]
+    test_ids: [AUTH-T001]
+    code_refs: ["src/auth/providers/github.ts#validateState"]
+    evidence_refs: [EVIDENCE-AUTH-T001]
+    waiver_id: null
+    status: VERIFIED
+
+  - requirement_id: AUTH-002
+    priority: MUST
+    applicability: APPLICABLE
+    acceptance_criteria:
+      - A consumed OAuth state cannot be reused.
+    invariant_ids: [AUTH-002]
+    test_ids: [AUTH-T002]
+    code_refs: ["src/auth/providers/github.ts#consumeState"]
+    evidence_refs: [EVIDENCE-AUTH-T002]
+    waiver_id: null
+    status: VERIFIED
+
+  - requirement_id: AUTH-003
+    priority: MUST
+    applicability: APPLICABLE
+    acceptance_criteria:
+      - Password authentication regression suite remains green.
+    invariant_ids: [AUTH-003]
+    test_ids: [AUTH-T003]
+    code_refs: ["src/ui/auth/login.tsx"]
+    evidence_refs: [EVIDENCE-AUTH-T003]
+    waiver_id: null
+    status: VERIFIED
+
+  - requirement_id: AUTH-004
+    priority: MUST
+    applicability: APPLICABLE
+    acceptance_criteria:
+      - OAuth tokens are absent from application logs.
+    invariant_ids: [AUTH-004]
+    test_ids: [AUTH-T004]
+    code_refs: ["src/auth/oauth-logger.ts"]
+    evidence_refs: [EVIDENCE-AUTH-T004]
+    waiver_id: null
+    status: VERIFIED

@@ -1,0 +1,221 @@
+id: critique-remembers-its-own-rounds
+
+state: DRAFT
+
+mvp_ref: gate-decides
+
+intent: |
+  The adversarial critique does not converge, and the reason is structural: every round starts from
+  nothing. The critic is handed a revised specification and the project's out-of-scope list, and is
+  told to refute — but it is never told what it raised last time, what the author changed in answer,
+  or what the author refused and why. So it raises the same objection again in new words, and the
+  author answers it again, and the count of findings does not fall.
+
+  This is measured, not felt. In the sessions that produced the last three slices of this engine, one
+  specification went through six rounds with the finding count flat, and another returned thirty
+  findings in a single round, several of which restated a non-goal the specification had named in
+  its own text. Every round is a paid model call and an author's attention, and the second round
+  onwards buys less than the first.
+
+  The fix is memory, not a limit. A round budget would cut the cost and keep the defect: a critique
+  that stops because it ran out of turns has not converged, it has been silenced.
+
+  So the critique carries its own history:
+
+  - PRIOR FINDINGS TRAVEL WITH THE PROMPT, WHOLE. Each earlier finding goes in as data — its title,
+    its severity, its BODY, and the author's `RESOLVED:` answer when it has one. The body is not
+    optional: a title like "authorization can be bypassed" tells the next critic nothing about which
+    input failed, so it cannot judge whether the revision addressed that scenario or whether its own
+    new objection is a restatement. It arrives under an instruction the critic can act on: do not raise these again in substance. If an answer is factually wrong, say which
+    claim in it is false and why, as a NEW finding. If a revision addressed a finding only partly,
+    name the part that is still missing. Restating the original is the one move that is forbidden.
+  - ONLY ANSWERED FINDINGS ARE ARCHIVED, AND THIS IS THE LOAD-BEARING RULE. A finding the author has
+    not answered stays in the LIVE section of the new file, carried forward whole. Archiving it would
+    hand the ratchet a bypass in the opposite direction: an inconvenient high finding could be walked
+    out of enforcement simply by running another round, and gate L — which requires every critical and
+    high finding to carry a written answer — would stop seeing it. An answer is the only thing that
+    moves a finding out of the way, exactly as before.
+
+  - ANSWERS SURVIVE A NEW ROUND, BEHIND A BOUNDARY GATE L CAN SEE. `critique` today writes the file
+    whole, so an author who resolves findings and then runs another round with `--force` loses every
+    answer they wrote. The new file keeps them in a trailing section — and that section begins with a
+    marker the parser stops at, because gate L scans every heading in the file. Without the boundary
+    an archived high finding would count as unanswered for ever, and the feature meant to end the
+    ratchet would jam the lock instead. The guard that refuses to overwrite answered work without
+    `--force` stays exactly as it is. Archived text is written as a blockquote, every line prefixed,
+    so a body that contains its own `## 1.` heading or a `SEVERITY:` line cannot manufacture a
+    finding in the parser that reads the file back.
+
+  - ONE ROUND OF HISTORY, NOT ALL OF THEM. The prompt carries the PREVIOUS round only. That is the
+    round the current specification was revised against, so it is the one that can be judged as
+    answered or not; carrying every round would grow the prompt without bound until the call fails,
+    and would spend the budget on objections that two revisions have already overtaken.
+
+  - A ROUND THAT FINDS NOTHING IS THE POINT, AND MUST BE RECORDABLE. Today an empty critic response
+    is `CRITIC_EMPTY`, an error — so the converged round, the one this whole slice exists to reach,
+    cannot be written down. A round with prior history may return no findings, but it must SAY so:
+    the critic is instructed to emit `NO NEW FINDINGS` when the specification resists it. That line
+    is what separates convergence from a broken CLI, an empty response or a truncated one, each of
+    which stays an error.
+
+  - A PRIOR FINDING CANNOT ESCAPE ITS FENCE. Everything embedded as data has its closing delimiter
+    neutralised before it goes in, because a finding is text the critic itself wrote last round and a
+    finding containing the delimiter would otherwise close the fence and continue as instructions.
+  - THE ROUND IS COUNTED AND SAID OUT LOUD. The file records which round produced it and how many
+    findings each earlier round carried, because a critique whose count is not falling is the thing
+    an author needs to see to stop.
+
+  NOT in scope: gate X's reviewer, which reviews an implementation rather than a specification and
+  has its own loop; any automatic acceptance, dismissal or severity downgrade of a finding — the
+  author answers findings, and nothing here answers them for them; a cap on rounds; and any change to
+  how gate L decides, which still requires every critical and high finding to carry a written answer.
+
+invariants:
+  - id: INV-01
+    statement: >
+      A second round knows what the PREVIOUS round said, in full — one round of history, because that
+      is the round the specification was revised against, and because an unbounded prompt eventually
+      fails outright. Every finding from that critique reaches the critic as data: its title, its severity, its body, and its answer when the author
+      wrote one — enough to tell a restatement from a genuinely new objection.
+  - id: INV-02
+    statement: >
+      The instruction is specific about what to do instead of repeating. The critic is told to name
+      the false claim in an answer, or the unaddressed part of a revision, and that restating an
+      already-answered finding is not a finding.
+  - id: INV-03
+    statement: >
+      Prior findings are DATA, exactly as the specification and the out-of-scope list are. They travel
+      inside a fenced block that says so, AND the fence's closing delimiter is neutralised wherever it
+      occurs inside them — a fence a hostile line can close is not a fence.
+  - id: INV-09
+    statement: >
+      A converged round is recordable and distinguishable. A critic that finds nothing says
+      `NO NEW FINDINGS`, and that round is written as a zero-finding round; an empty, truncated or
+      failed response without that line remains an error, because "it said nothing" and "it found
+      nothing" are different facts.
+  - id: INV-10
+    statement: >
+      An answer ends where the next heading begins. A `RESOLVED:` line and the lines under it belong
+      to the finding they sit in, and no prose elsewhere in the file can manufacture one.
+  - id: INV-04
+    statement: >
+      No answer is lost, and nothing escapes enforcement by being kept. ANSWERED findings move below
+      a marker the critique parser stops at, quoted line by line; UNANSWERED findings are carried
+      forward into the live section, where gate L goes on demanding an answer for every critical and
+      high one.
+  - id: INV-05
+    statement: >
+      The existing overwrite guard is untouched: a critique that already carries resolved findings
+      still refuses to be regenerated without `--force`, and `--force` now preserves rather than
+      discards them.
+  - id: INV-06
+    statement: >
+      The file says which round it is and what each earlier round cost. A reader can see the count of
+      findings per round without reconstructing it from git history.
+  - id: INV-07
+    statement: >
+      Nothing decides on the author's behalf. No finding is dropped, merged, downgraded or marked
+      answered by the engine; gate L still requires every critical and high finding to carry a
+      written answer.
+  - id: INV-08
+    statement: >
+      A first round is unchanged. With no prior critique the prompt carries no history block and the
+      file has no prior-rounds section — the feature costs nothing where it has nothing to say.
+
+acceptance_criteria:
+  - id: AC-01
+    statement: >
+      given a critique file carrying findings, some answered and some not; when a new round is built;
+      then the prompt contains each earlier finding's title, severity and answer.
+    test:
+      file: test/critique-rounds.test.mjs
+      selector: hands the critic what it already said and what it was told
+      expected_red: assertion
+  - id: AC-02
+    statement: >
+      given prior findings in the prompt; when its instructions are read; then they forbid restating
+      an answered finding and name the two moves that are allowed instead.
+    test:
+      file: test/critique-rounds.test.mjs
+      selector: says what to do instead of repeating itself
+      expected_red: assertion
+  - id: AC-03
+    statement: >
+      given a prior finding whose text is written to look like an instruction; when the prompt is
+      built; then it sits inside a data fence that says it is data.
+    test:
+      file: test/critique-rounds.test.mjs
+      selector: keeps a hostile finding from becoming an instruction
+      expected_red: assertion
+  - id: AC-04
+    statement: >
+      given a critique with answered findings and a forced new round; when the file is written; then
+      every earlier finding and answer is still in it.
+    test:
+      file: test/critique-rounds.test.mjs
+      selector: keeps an answer the next round supersedes
+      expected_red: assertion
+  - id: AC-05
+    statement: >
+      given a third round; when the file is written; then it names the round and the finding count of
+      each earlier round.
+    test:
+      file: test/critique-rounds.test.mjs
+      selector: shows whether the count is falling
+      expected_red: assertion
+  - id: AC-06
+    statement: >
+      given no prior critique; when the prompt is built; then it carries no history block at all.
+    test:
+      file: test/critique-rounds.test.mjs
+      selector: costs nothing on a first round
+      expected_red: assertion
+
+  - id: AC-07
+    statement: >
+      given a critique file with an archived section; when gate L reads it; then answered findings
+      below the marker are not re-judged, while an UNANSWERED finding from an earlier round is still
+      in the live section and still blocks the lock.
+    test:
+      file: test/critique-rounds.test.mjs
+      selector: cannot walk an unanswered finding out of enforcement
+      expected_red: assertion
+  - id: AC-08
+    statement: >
+      given a critic response of `NO NEW FINDINGS`; when the round is recorded; then it succeeds with
+      zero findings; and given an empty response, it still fails.
+    test:
+      file: test/critique-rounds.test.mjs
+      selector: tells convergence apart from silence
+      expected_red: assertion
+  - id: AC-09
+    statement: >
+      given a prior finding whose body contains the fence's closing delimiter; when the prompt is
+      built; then that delimiter is neutralised and the text after it is still inside the fence.
+    test:
+      file: test/critique-rounds.test.mjs
+      selector: neutralises a delimiter that would close the fence
+      expected_red: assertion
+
+  - id: AC-10
+    statement: >
+      given a prior finding whose body contains a line beginning `## 1.` and a line beginning
+      `SEVERITY:`; when it is archived and the file is parsed again; then no extra finding appears.
+    test:
+      file: test/critique-rounds.test.mjs
+      selector: cannot manufacture a finding out of a quoted body
+      expected_red: assertion
+
+allowed_paths:
+  - src/adapters/critic-codex.mjs
+  - src/cli/commands.mjs
+  - src/core/**
+  - test/**
+  - docs/specs/critique-remembers-its-own-rounds/**
+
+rollback:
+  strategy: git revert
+  notes: >
+    Clean. The change is confined to what a prompt carries and what a file keeps; no gate verdict
+    depends on it, and a reverted engine simply starts each round from nothing again, which is what
+    it does today.

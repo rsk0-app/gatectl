@@ -1,0 +1,18 @@
+[
+  {
+    "version": 1,
+    "digest": "49095fed136f8b97f5a565667482c32761f54547b05a5be164911a5fc1d4473a",
+    "at": "2026-08-25T07:32:54.158Z",
+    "tier": "B",
+    "requiredTests": [
+      "test/critique-rounds.test.mjs"
+    ],
+    "allowedPaths": [
+      "src/adapters/critic-codex.mjs",
+      "src/cli/commands.mjs",
+      "src/core/**",
+      "test/**",
+      "docs/specs/critique-remembers-its-own-rounds/**"
+    ]
+  }
+]
