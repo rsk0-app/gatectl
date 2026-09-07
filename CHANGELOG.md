@@ -20,6 +20,7 @@ Repository tasks can run through gatectl from Codex or Claude Code plugins.
   Completion records distinguish policy-gate acceptance from criterion RED/GREEN proof.
 - The verifier runs typecheck and reports only command checks actually executed; full gates stay
   in `not_rerun`. Compiled-spec digests retain their canonical meaning in issued records.
+- New CI installations pin the public gatectl v0.15.0 referee instead of a placeholder repository.
 - Regression coverage includes stale exceptions, protected locks, light-tier delivery, plugin
   cache isolation, bounded Stop behavior and stale completion after edits.
 
