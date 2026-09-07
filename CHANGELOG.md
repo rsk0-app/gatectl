@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.15.0 — 2026-09-07
+
+Repository tasks can run through gatectl from Codex or Claude Code plugins.
+
+- One self-contained plugin has both manifests, a shared delivery skill, an offline bundled CLI,
+  and SessionStart/UserPromptSubmit/Stop hooks. Setup opts in a repository; session enrollment
+  scopes completion reminders to implementation work. A pause never creates completion evidence.
+- `init --client codex|claude` configures the other CLI as critic/reviewer for new policies. Existing
+  policies are preserved, and enrollment refuses a mismatched implementer.
+- Review acceptances bind to the exact review digest, specification and tree, including criterion
+  exceptions. Reused ids/titles and legacy unbound acceptances cannot clear a later review.
+- Active spec directories no longer bypass meta-class checks. Only the exact lock artifact
+  recorded by gate L can be excepted locally. Gate C checks scope for every tier.
+- Gfull runs the declared typecheck as well as build/tests. Command gates reject index drift
+  before execution and do not stamp a changed tree as tested.
+- `next` and `complete` honor effective-tier requirements. `verification: policy` allows explicit
+  policy-only criteria; escalation to a tier requiring R refuses missing test obligations.
+  Completion records distinguish policy-gate acceptance from criterion RED/GREEN proof.
+- The verifier runs typecheck and reports only command checks actually executed; full gates stay
+  in `not_rerun`. Compiled-spec digests retain their canonical meaning in issued records.
+- Regression coverage includes stale exceptions, protected locks, light-tier delivery, plugin
+  cache isolation, bounded Stop behavior and stale completion after edits.
+
+Migration: declare typecheck (or a justified `none`), refresh old lock/exception evidence, and
+update issued-verdict consumers to use the command-check labels. No existing target policy is
+rewritten by upgrading.
+
 ## 0.14.0 — 2026-08-20
 
 Gate X stops paying for findings and starts requiring coverage.

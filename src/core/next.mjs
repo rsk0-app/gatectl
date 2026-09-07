@@ -20,7 +20,7 @@ const freshFor = (entry, { digest, tree, tests }) => {
   return true
 }
 
-export function nextStep({ feature, spec, digest, tree, tests, results = [], requires = [], critique, hasImplementation, attested, completion, baseHint }) {
+export function nextStep({ feature, spec, digest, tree, tests, results = [], requires = [], critique, hasImplementation, attested, completion, baseHint, critiqueRequired = requires.includes("L") }) {
   const latest = (gate) => [...results].reverse().find((r) => r.gate === gate) ?? null
   const step = (state, next_command, why, extra = {}) => ({
     state, next_command, why,
@@ -40,33 +40,39 @@ export function nextStep({ feature, spec, digest, tree, tests, results = [], req
     return step("BLOCKED", null, `${spec.blockingQuestions.length} BLOCKING question(s) need a human answer`,
                 { allowed_actions: ["answer_blocking_questions"] })
 
+  if (!requires.length || requires.some(g => !["L", "R", "Gfast", "Gfull", "X"].includes(g)))
+    return step("BLOCKED", null, "policy has missing or unsupported required gates", { allowed_actions: [] })
+  const needsRed = requires.includes("R")
   const severeOpen = (critique?.findings ?? []).filter((f) => ["critical", "high"].includes(f.severity) && !f.resolved)
-  if (!critique?.findings?.length)
+  if (critiqueRequired && !critique?.findings?.length)
     return step("SPEC_REVIEW", "gatectl critique", "no critique yet — a spec nobody argued with is not reviewed")
-  if (severeOpen.length)
+  if (requires.includes("L") && severeOpen.length)
     return step("SPEC_REVIEW", `edit docs/specs/${feature.slug}/critique.md`,
                 `${severeOpen.length} critical/high finding(s) unresolved — resolve each with a RESOLVED: line`,
                 { allowed_actions: ["resolve_findings"] })
 
-  if (!freshFor(latest("L"), { digest }))
+  if (requires.includes("L") && !freshFor(latest("L"), { digest }))
     return step("SPEC_REVIEW", "gatectl lock", "the spec is not locked at its current digest")
 
   const red = latest("R")
-  if (!freshFor(red, { digest, tests }))
+  if (needsRed && !freshFor(red, { digest, tests }))
     return step("LOCKED", baseHint ? `gatectl red --base ${baseHint}` : "gatectl red --base <sha>",
                 "the required tests have not been proven RED against the base commit")
-  if (!red.replay)
+  if (needsRed && !red.replay)
     return step("LOCKED", baseHint ? `gatectl red --base ${baseHint}` : "gatectl red --base <sha>",
                 "gate R judged a working tree — replay it against base so the RED can be reproduced")
 
-  if (!hasImplementation)
-    return step("RED_PROVEN", "implement the change", "RED is proven and nothing implements it yet",
+  if (!hasImplementation && !["Green", "Gfast", "Gfull"].some(gate => freshFor(latest(gate), { digest, tree })))
+    return step(needsRed ? "RED_PROVEN" : "IMPLEMENTING", "implement the change", needsRed ? "RED is proven and nothing implements it yet" : "the task has no implementation yet",
                 { allowed_actions: ["implement"] })
 
-  if (!freshFor(latest("Green"), { digest, tree }))
+  if (needsRed && !freshFor(latest("Green"), { digest, tree }))
     return step("IMPLEMENTING", "gatectl green", "no GREEN evidence for this tree — every criterion must pass here")
 
-  if (!freshFor(latest("Gfull"), { digest, tree }))
+  if (requires.includes("Gfast") && !freshFor(latest("Gfast"), { digest, tree }))
+    return step("IMPLEMENTING", "gatectl gate fast", "the policy requires a fast gate over this tree")
+
+  if (requires.includes("Gfull") && !freshFor(latest("Gfull"), { digest, tree }))
     return step("GREEN", "gatectl gate full", "the full suite and the diff checks have not run over this tree")
 
   if (requires.includes("X") && !freshFor(latest("X"), { digest, tree }))
@@ -82,7 +88,7 @@ export function nextStep({ feature, spec, digest, tree, tests, results = [], req
   if (completion !== "ACCEPT")
     return step("VERIFIED", "gatectl complete", "everything is bound; ask whether the feature is actually delivered")
 
-  return step("COMPLETED", null, "every criterion is proven RED then GREEN, and the Completion Authority accepted",
+  return step("COMPLETED", null, needsRed ? "every criterion is proven RED then GREEN, and the Completion Authority accepted" : "the declared policy gates passed and completion accepted; no per-criterion RED/GREEN claim",
               { allowed_actions: [] })
 }
 

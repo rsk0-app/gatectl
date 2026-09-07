@@ -1,0 +1,6 @@
+# templates/MVP.yaml — the project ceiling. HUMAN-ONLY: the agent reads, never writes.
+mvp_done_when:
+  - id: example-outcome
+    text: "Replace me: what a person can DO when the MVP is live"
+out_of_scope:
+  - "Replace me: what we are explicitly NOT building before launch"

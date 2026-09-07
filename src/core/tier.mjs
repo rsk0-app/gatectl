@@ -56,7 +56,7 @@ export function effectiveTier(allowedPaths, changedPaths, policy) {
 }
 
 // The engine's own bookkeeping is not shipped code and must not set the tier. spec.md,
-// spec.lock.json, gates.json and ACTIVE all move during a normal cycle; under a policy whose
+// spec.yaml, critique.md, spec.lock.json and ACTIVE move during a normal cycle; under a policy whose
 // tiers do not name docs/specs/** they fall through to unmatched_tier (A, fail-closed) and would
 // escalate every feature in every repo to tier A — an escalation rule that always fires is the
 // same as no rule at all. Mirrors the alwaysAllowed set in diffChecks, for the same reason.
@@ -65,6 +65,6 @@ export function effectiveTier(allowedPaths, changedPaths, policy) {
 // adds noise, not safety — while at init time, before the first commit, .gatectl/policy.yaml itself
 // is an unmatched new file and would escalate every first feature in every repo to tier A.
 export function shippedPaths(changed, specDir, metaClass = []) {
-  const engine = [`${specDir}/**`, "docs/specs/ACTIVE", ...metaClass]
+  const engine = ["spec.md", "spec.yaml", "critique.md", "spec.lock.json"].map((name) => `${specDir}/${name}`).concat("docs/specs/ACTIVE", metaClass)
   return (changed ?? []).filter((p) => !matchesAny(p, engine))
 }

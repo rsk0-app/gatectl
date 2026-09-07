@@ -7,7 +7,7 @@ export function gateL({ spec, critique, tier, policy, mvp }) {
   const reasons = []
   if (spec.missingSections.length) reasons.push(`missing sections: ${spec.missingSections.join(", ")}`)
   if (spec.blockingQuestions.length) reasons.push(`open BLOCKING questions: ${spec.blockingQuestions.length}`)
-  if (spec.acceptanceCriteriaWithoutTests.length)
+  if ((policy.tiers?.[tier]?.requires ?? ["R"]).includes("R") && spec.acceptanceCriteriaWithoutTests.length)
     reasons.push(`acceptance criteria naming no required test: ${spec.acceptanceCriteriaWithoutTests.length}`)
   if (spec.mvpRef && spec.mvpRef !== "maintenance") {
     const known = (mvp?.mvp_done_when ?? []).some((e) => e.id === spec.mvpRef)
@@ -102,16 +102,16 @@ export function gateR({ obligations, run, caseCommand = false }, policy) {
   return { status: "PASS", reasons: [], perTest }
 }
 
-export function diffChecks({ changed, diffText, allowedPaths, specDir, metaClass }) {
+export function diffChecks({ changed, diffText, allowedPaths, specDir, metaClass, verifiedArtifacts = [] }) {
   const reasons = []
-  const allowed = [...allowedPaths, `${specDir}/**`]
-  // I4: the engine's own artifacts (this feature's spec dir, and docs/specs/ACTIVE) are
-  // always allowed and never meta-class-flagged — gating must not fail on its own bookkeeping.
-  const alwaysAllowed = [`${specDir}/**`, "docs/specs/ACTIVE"]
+  // Only the exact lock bytes produced by gate L may bypass a meta-class match. The caller
+  // verifies that digest against the signed ledger; directory membership grants no authority.
+  const bookkeeping = [`${specDir}/spec.md`, `${specDir}/spec.yaml`, `${specDir}/critique.md`, "docs/specs/ACTIVE"]
   for (const p of changed) {
-    if (matchesAny(p, alwaysAllowed)) continue
+    if (p === `${specDir}/spec.lock.json` && verifiedArtifacts.includes(p)) continue
     if (matchesAny(p, metaClass)) { reasons.push(`meta-class file touched: ${p}`); continue }
-    if (!matchesAny(p, allowed)) reasons.push(`changed outside allowed_paths: ${p}`)
+    if (bookkeeping.includes(p)) continue
+    if (!matchesAny(p, allowedPaths)) reasons.push(`changed outside allowed_paths: ${p}`)
   }
   const deleted = [...diffText.matchAll(/^diff --git a\/(\S+) b\/\S+\r?\ndeleted file/gm)].map((m) => m[1])
   for (const p of deleted) if (/\.(test|spec)\./.test(p)) reasons.push(`test file deleted: ${p}`)
@@ -189,15 +189,16 @@ export function gateGfast({ run, policy, changed }) {
   return { status: reasons.length ? "FAIL" : "PASS", reasons, skipped }
 }
 
-export function gateGfull({ run, policy, changed, diffText, spec, specDir }) {
+export function gateGfull({ run, policy, changed, diffText, spec, specDir, verifiedArtifacts = [] }) {
   // I6: same rationale as Gfast — an empty diff has nothing to gate.
   if (changed.length === 0) return { status: "NOT_EVALUATED", reasons: ["empty diff — nothing to gate"] }
   const { notEvaluated, reasons, skipped } = runSteps(run, [
+    ["typecheck", policy.commands?.typecheck],
     ["build", policy.commands?.build],
     ["full suite", policy.commands?.test_all],
   ])
   if (notEvaluated) return { status: "NOT_EVALUATED", reasons: [notEvaluated], skipped }
-  reasons.push(...diffChecks({ changed, diffText, allowedPaths: spec.allowedPaths, specDir, metaClass: policy.meta_class ?? [] }))
+  reasons.push(...diffChecks({ changed, diffText, allowedPaths: spec.allowedPaths, specDir, metaClass: policy.meta_class ?? [], verifiedArtifacts }))
   return { status: reasons.length ? "FAIL" : "PASS", reasons, skipped }
 }
 

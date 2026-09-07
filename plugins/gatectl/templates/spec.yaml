@@ -1,0 +1,44 @@
+# docs/specs/{slug}/spec.yaml — the source of truth. `gatectl spec compile` is what the gates read.
+#
+# Prose still belongs in spec.md next to this file: the why-now, the alternatives considered, the
+# things that only read well in sentences. What lives HERE is what a gate has to check without
+# interpretation. A criterion with no test is refused at compile time, not discovered three
+# commands later.
+id: {slug}
+state: DRAFT
+
+# An id from .gatectl/MVP.yaml's mvp_done_when, or "maintenance".
+mvp_ref: REPLACE
+
+intent: |
+  Зачем сейчас, для кого, как выглядит успех, что НЕ делаем. Русский — ок.
+
+invariants:
+  - id: INV-01
+    statement: REPLACE — what must stay true after this change
+
+acceptance_criteria:
+  - id: AC-01
+    statement: REPLACE — given …, when …, then …
+    test:
+      file: test/REPLACE.test.ts
+      # The case inside that file. Naming the file alone proves only that the file went red —
+      # a syntax error or an unrelated case does that too. Optional, but a criterion without one
+      # is a weaker promise, and gate R will say so.
+      selector: REPLACE — the exact test name
+      # What RED is expected to look like for this criterion. `assertion` is the default and the
+      # strict one; `load` is legitimate when the criterion is about an export that does not
+      # exist yet, and the file genuinely cannot be imported before the change.
+      expected_red: assertion
+
+allowed_paths:
+  - src/REPLACE/**
+  - test/**
+
+rollback:
+  strategy: REPLACE — feature flag, revert, migration down
+  notes: null
+
+# Questions that must be answered by a human before this can be locked. Gate L refuses while any
+# remain — an open question is not a detail to be resolved by guessing.
+blocking_questions: []

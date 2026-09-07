@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { gateX, validateReview, verifyCitation, PROMPT_VERSION } from "../src/core/review.mjs"
+import { gateX, reviewDigest, validateReview, verifyCitation, PROMPT_VERSION } from "../src/core/review.mjs"
 
 const FILE = ["export function refresh(token) {", "  if (expired(token)) return null", "  return token", "}"]
 const readLines = (f) => (f === "src/auth.ts" ? FILE : f === "test/auth.test.ts" ? ["it('rejects', () => {})"] : null)
@@ -135,7 +135,7 @@ describe("gate X", () => {
 
   it("an acceptance recorded in writing clears a severe finding, and says so out loud", () => {
     const review = { ...REVIEW, findings: [{ id: "X-001", severity: "high", title: "known gap" }] }
-    const r = gateX({ ...BASE, review, acceptances: [{ finding: "X-001", reason: "shipping behind a flag" }] })
+    const r = gateX({ ...BASE, review, acceptances: [{ finding: "X-001", title: "known gap", tree: BASE.tree, digest: BASE.compiled.digest, review_digest: reviewDigest(review), reason: "shipping behind a flag" }] })
     expect(r.status).toBe("PASS")
     expect(r.reasons.join()).toContain("accepted in writing: X-001")
   })
@@ -164,7 +164,7 @@ describe("gate X", () => {
     expect(blocked.status).toBe("NOT_EVALUATED")
     const accepted = gateX({
       ...BASE, review,
-      acceptances: [{ criterion: "AC-01", digest: BASE.compiled.digest, reason: "deferred on purpose" }],
+      acceptances: [{ criterion: "AC-01", tree: BASE.tree, review_digest: reviewDigest(review), digest: BASE.compiled.digest, reason: "deferred on purpose" }],
     })
     expect(accepted.status, accepted.reasons?.join()).toBe("PASS")
     expect(accepted.reasons.join()).toContain("accepted in writing: AC-01")

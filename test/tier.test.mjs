@@ -85,7 +85,7 @@ describe("shippedPaths", () => {
   it("drops the feature's own spec dir and ACTIVE, keeps real code", () => {
     const changed = ["docs/specs/f1/spec.md", "docs/specs/f1/spec.lock.json", "docs/specs/f1/gates.json",
                      "docs/specs/ACTIVE", "src/impl.ts"]
-    expect(shippedPaths(changed, "docs/specs/f1")).toEqual(["src/impl.ts"])
+    expect(shippedPaths(changed, "docs/specs/f1")).toEqual(["docs/specs/f1/gates.json", "src/impl.ts"])
   })
   it("keeps ANOTHER feature's spec dir — that is a real change to a file this feature does not own", () => {
     expect(shippedPaths(["docs/specs/f2/spec.md"], "docs/specs/f1")).toEqual(["docs/specs/f2/spec.md"])

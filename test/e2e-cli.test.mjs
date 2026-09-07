@@ -274,7 +274,7 @@ describe("C1 — commit-check binds to the working tree, not only the spec diges
       "    paths: ['**']",
       "    requires: [L, R, Gfull]",
       "commands:",
-      "  build: 'true'",
+      "  typecheck: none", "  build: 'true'",
       "  test_all: 'true'",
       "  test_file: 'node test-fail.mjs'",
       "failure_classes:",
@@ -333,7 +333,7 @@ describe("I8 — gate full diffText mirrors changedPaths' staged-is-truth rule",
     rda(root, ["init"])
     fs.writeFileSync(path.join(root, ".gatectl/MVP.yaml"), "mvp_done_when:\n  - id: works\n    text: x\nout_of_scope: []\n")
     fs.writeFileSync(path.join(root, ".gatectl/policy.yaml"),
-      "version: 1\nunmatched_tier: A\ntiers:\n  A:\n    paths: ['**']\n    requires: [Gfull]\ncommands:\n  build: 'true'\n  test_all: 'true'\ncritic:\n  required_for_tiers: []\nmeta_class: []\n")
+      "version: 1\nunmatched_tier: A\ntiers:\n  A:\n    paths: ['**']\n    requires: [Gfull]\ncommands:\n  typecheck: none\n  build: 'true'\n  test_all: 'true'\ncritic:\n  required_for_tiers: []\nmeta_class: []\n")
     rda(root, ["new", "f1"])
     fs.rmSync(path.join(root, "docs/specs/f1/spec.yaml"), { force: true }) // Markdown path under test
     fs.writeFileSync(path.join(root, "docs/specs/f1/spec.md"), `# f1
@@ -358,7 +358,7 @@ flag
 `)
     fs.mkdirSync(path.join(root, "test"), { recursive: true })
     fs.writeFileSync(path.join(root, "test/a.test.ts"), "it.only(\"x\", () => {})\n")
-    execSync("git add test/a.test.ts", { cwd: root })
+    execSync("git add .", { cwd: root })
     const r = rda(root, ["gate", "full"])
     const onlyMentions = r.out.split("\n").filter((l) => l.includes(".only")).length
     expect(onlyMentions).toBe(1)
@@ -454,7 +454,7 @@ describe("C5 — the documented protocol order reaches a green commit-check", ()
     "    paths: ['src/**', 'test/**']",
     "    requires: [L, R, Gfull, C]",
     "commands:",
-    "  build: 'true'",
+    "  typecheck: none", "  build: 'true'",
     "  test_all: 'true'",
     "  test_file: 'node red-if-missing.mjs {file}'",
     "failure_classes:",
@@ -739,7 +739,7 @@ describe("#4/#6 — the commit is the index, and the diff sets the tier", () => 
     "    paths: ['src/**', 'test/**']",
     "    requires: [L, R, Gfull, C]",
     "commands:",
-    "  build: 'true'",
+    "  typecheck: none", "  build: 'true'",
     "  test_all: 'true'",
     "  test_file: 'node red-if-missing.mjs {file}'",
     "failure_classes:",
@@ -894,7 +894,7 @@ describe("#1 — attestation and independent verification", () => {
     "    paths: ['src/**', 'test/**']",
     "    requires: [L, R, Gfull]",
     "commands:",
-    "  build: 'true'",
+    "  typecheck: none", "  build: 'true'",
     "  test_all: 'true'",
     "  test_file: 'node red-if-missing.mjs {file}'",
     "failure_classes:",
@@ -1126,12 +1126,15 @@ flag
 
   // Independent verification: not "the signature matches" but "the gates still say yes", run
   // against a detached worktree at that commit so nothing about the current checkout can leak in.
-  it("--rerun re-runs the gates at the commit and PASSes when they still agree", () => {
+  it("--rerun reports executed commands without claiming full policy gates", () => {
     const root = greenCommit()
-    const r = rda(root, ["verify", "--commit", "HEAD", "--rerun"])
+    const r = rda(root, ["verify", "--commit", "HEAD", "--base", "HEAD", "--rerun", "--evidence", `${root}-ev.json`])
     expect(r.code).toBe(0)
     expect(r.out).toContain("re-ran full suite: exit 0")
-    expect(r.out).toContain("still agree")
+    expect(r.out).toContain("full policy gates were not re-evaluated")
+    const ev = JSON.parse(fs.readFileSync(`${root}-ev.json`, "utf8"))
+    expect(ev.not_rerun).toEqual(["L", "R", "Gfull"])
+    expect(ev.gates).toEqual({ Build: "PASS", TestSuite: "PASS" })
   })
 
   it("--rerun FAILs when the committed tree does not actually pass, whatever the attestation says", () => {
@@ -1291,7 +1294,7 @@ describe("gate X — accounting for every promise, with citations", () => {
     "version: 1", "unmatched_tier: A",
     "tiers:", "  A:", "    paths: ['src/**', 'test/**']", "    requires: [L, R, Gfull, X]",
     "test_paths: ['test/**']",
-    "commands:", "  build: 'true'", "  test_all: 'true'",
+    "commands:", "  typecheck: none", "  build: 'true'", "  test_all: 'true'",
     "  test_file: 'node runner.mjs {file}'", "  test_case: 'node runner.mjs {file} {selector}'",
     "failure_classes:", "  assertion: ['^AssertionError']", "  empty: ['no matching test']",
     "critic:", "  required_for_tiers: []", "  model: critic-1",
@@ -1487,7 +1490,7 @@ describe("#1 — sandboxed runner, isolated signer", () => {
     "    paths: ['src/**']",
     "    requires: [L, R, Gfull]",
     "commands:",
-    "  build: 'true'",
+    "  typecheck: none", "  build: 'true'",
     "  test_all: 'true'",
     "  test_file: 'true'",
     "critic:",
@@ -1527,6 +1530,9 @@ describe("#1 — sandboxed runner, isolated signer", () => {
     expect(r.code).toBe(0)
     expect(r.out).toContain("evidence (unsigned)")
     const ev = JSON.parse(fs.readFileSync(out, "utf8"))
+    expect(ev.gates).toEqual({ Build: "PASS", TestSuite: "PASS" })
+    expect(ev.not_rerun).toEqual([])
+    expect(ev.reran).toEqual(["build", "full suite"])
     expect(ev.schema_version).toBe(1)
     expect(ev.head_sha).toBe(head)
     expect(ev.base_sha).toBe(base)
@@ -1715,7 +1721,7 @@ describe("gate R — replay against base + the test changes", () => {
     "    requires: [L, R, Gfull]",
     "test_paths: ['test/**']",
     "commands:",
-    "  build: 'true'",
+    "  typecheck: none", "  build: 'true'",
     "  test_all: 'true'",
     "  test_file: 'node runner.mjs {file}'",
     "  test_case: 'node runner.mjs {file} {selector}'",
@@ -1875,7 +1881,7 @@ describe("gatectl next", () => {
     "version: 1", "unmatched_tier: A",
     "tiers:", "  A:", "    paths: ['src/**', 'test/**']", "    requires: [L, R, Gfull]",
     "test_paths: ['test/**']",
-    "commands:", "  build: 'true'", "  test_all: 'true'",
+    "commands:", "  typecheck: none", "  build: 'true'", "  test_all: 'true'",
     "  test_file: 'node runner.mjs {file}'", "  test_case: 'node runner.mjs {file} {selector}'",
     "failure_classes:", "  assertion: ['^AssertionError']", "  empty: ['no matching test']",
     "critic:", "  required_for_tiers: []", "meta_class: ['.gatectl/**']", "",
@@ -1927,7 +1933,7 @@ rollback:
   it("answers in JSON an agent can branch on", () => {
     const { root } = repo()
     const n = next(root)
-    expect(n).toMatchObject({ state: "SPEC_REVIEW", next_command: "gatectl critique" })
+    expect(n).toMatchObject({ state: "SPEC_REVIEW", next_command: "gatectl lock" })
     expect(Array.isArray(n.allowed_actions)).toBe(true)
     expect(n.blocking_questions).toEqual([])
   })

@@ -17,22 +17,22 @@ import { appendEntry, readLedger } from "../core/ledger.mjs"
 import { ledgerFile, attestationFile, reviewFile, stateDir, loadKey, loadIssuerKey, loadVerifyKey, issuerKeyFile, generateIssuerKeypair } from "../core/authority.mjs"
 import { signAttestation, checkAttestation, verifySignature, signIssued, verifyIssued, environment } from "../core/attest.mjs"
 import { SCHEMA_VERSION, validateEnvelope, crossCheck, envelopeDigest, evidenceDigest } from "../core/envelope.mjs"
-import { gateL, gateR, gateGfast, gateGfull, gateC, diagnostics, classifyFailure } from "../core/gates.mjs"
-import { gateX, PROMPT_VERSION } from "../core/review.mjs"
+import { gateL, gateR, gateGfast, gateGfull, gateC, diffChecks, diagnostics, classifyFailure } from "../core/gates.mjs"
+import { gateX, reviewDigest, PROMPT_VERSION } from "../core/review.mjs"
 import { buildCritiquePrompt, buildReviewPrompt, runCritic, extractJson } from "../adapters/critic-codex.mjs"
 import { pageRef, renderPage, INDEX_REF, renderIndex, parseIndex, mergeEntry, rankEntries } from "../core/memory-page.mjs"
 import { resolveMemoryConfig, exportPages, readPages } from "../adapters/memory-tdam.mjs"
 import { detectCommands, auditTierPaths, renderPolicy } from "../core/detect.mjs"
 import { decideCompletion } from "../core/completion.mjs"
 import { testPatch, implementationPatch, judgeRed, judgeGreen } from "../core/replay.mjs"
+import { readSession, writeSession, clientFamily } from "../core/plugin-session.mjs"
+import { runPluginHook } from "./plugin-hook.mjs"
 import { nextStep } from "../core/next.mjs"
 import { matchesAny } from "../core/tier.mjs"
 
-const TEMPLATES = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../templates")
-// Stamped into every attestation: an evidence record that does not say which engine produced it
-// cannot be re-checked once the engine's own rules change.
-const VERSION = JSON.parse(
-  fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../../package.json"), "utf8")).version
+const PACKAGE_ROOT = fileURLToPath(new URL(typeof GATECTL_BUNDLED !== "undefined" ? "../" : "../../", import.meta.url))
+const TEMPLATES = path.join(PACKAGE_ROOT, "templates")
+const VERSION = JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf8")).version
 const STATUS_CODE = { PASS: 0, FAIL: 1, NOT_EVALUATED: 2 }
 
 function targetRoot(args) {
@@ -142,7 +142,7 @@ const policyDigest = (root) => specDigest(fs.readFileSync(path.join(resolveConfi
 // judged it cannot be re-checked once the engine's own rules change — and an engine swapped for
 // a friendlier one leaves no trace otherwise.
 function engineDigest() {
-  const base = path.join(path.dirname(fileURLToPath(import.meta.url)), "../..")
+  const base = PACKAGE_ROOT
   const files = []
   const walk = (dir) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
@@ -152,7 +152,7 @@ function engineDigest() {
       else if (/\.mjs$/.test(e.name)) files.push(abs)
     }
   }
-  for (const dir of ["bin", "src"]) walk(path.join(base, dir))
+  for (const dir of ["bin", "src"]) if (fs.existsSync(path.join(base, dir))) walk(path.join(base, dir))
   const h = crypto.createHash("sha256")
   for (const f of files) { h.update(path.relative(base, f)); h.update("\0"); h.update(fs.readFileSync(f)) }
   return h.digest("hex")
@@ -196,6 +196,16 @@ const lineReader = (root) => (rel) => {
 // require, and did the ledger record it over this exact state". Returning `{ code }` means the
 // question could not be asked at all — the caller returns it unchanged, so a NOT_EVALUATED here
 // can never be rendered as a FAIL there.
+function verifiedLockArtifacts(root, f) {
+  const lockPath = path.join(f.dir, "spec.lock.json")
+  const authority = openLedger(root, f.slug, { create: false })
+  if (!authority.ok || !fs.existsSync(lockPath)) return []
+  const ledger = readLedger(authority.path, authority.key)
+  const lock = ledger.ok ? [...ledger.entries].reverse().find((e) => e.gate === "L") : null
+  return lock?.status === "PASS" && lock.digest === f.digest &&
+    lock.lock_artifact === specDigest(fs.readFileSync(lockPath, "utf8")) ? [path.relative(root, lockPath)] : []
+}
+
 function gateCContext(root, target, f, label) {
   // Recomputed from the real diff, not read back from the lock: the lock records the tier the
   // spec was reviewed AT, and the whole point is to catch the diff having outgrown it.
@@ -216,7 +226,11 @@ function gateCContext(root, target, f, label) {
   // not pass"; the truth is that nothing can be concluded from a record that was edited.
   if (!ledger.ok) { console.error(`${label}: NOT_EVALUATED\n  - gate ledger is not trustworthy: ${ledger.detail}`); return { code: 2 } }
 
-  const blockers = []
+  const blockers = diffChecks({ changed: changedPaths(root), diffText: currentDiffText(root),
+    allowedPaths: f.spec.allowedPaths, specDir: path.relative(root, f.dir),
+    metaClass: target.policy.meta_class ?? [], verifiedArtifacts: verifiedLockArtifacts(root, f) })
+  if (requires.includes("R") && f.spec.acceptanceCriteriaWithoutTests.length)
+    blockers.push("this tier requires per-criterion RED: policy-only criteria need tests after tier escalation")
   const lockPath = path.join(f.dir, "spec.lock.json")
   const lock = fs.existsSync(lockPath) ? latestLock(JSON.parse(fs.readFileSync(lockPath, "utf8"))) : null
   // An escalated tier invalidates the lock outright: the spec was critiqued, reviewed and locked
@@ -376,8 +390,57 @@ function installPostCommitHook(root) {
 }
 
 export const COMMANDS = {
+  async version() { console.log(VERSION); return 0 },
+  async hook() {
+    const raw = fs.readFileSync(0, "utf8")
+    if (raw.length > 1024 * 1024) { console.error("hook input is too large"); return 2 }
+    console.log(JSON.stringify(runPluginHook(JSON.parse(raw), path.join(PACKAGE_ROOT, "bin/gatectl.mjs"))))
+    return 0
+  },
+  async task(args) {
+    const root = targetRoot(args)
+    const value = (key) => { const i = args.indexOf(key); return i < 0 ? null : args[i + 1] }
+    const id = value("--session")
+    if (!id) { console.error("task requires --session <id>"); return 2 }
+    const mode = args[0]
+    if (mode === "pause") {
+      const session = readSession(root, id)
+      if (!session || !value("--reason")?.trim()) { console.error("pause requires an enrolled session and --reason"); return 2 }
+      writeSession(root, id, { ...session, paused: true, reason: value("--reason"), at: new Date().toISOString() })
+      console.log("task paused; no gate or completion status was changed")
+      return 0
+    }
+    if (mode !== "start") { console.error("usage: task start <slug> --session <id> --client codex|claude, or task pause --session <id> --reason <text>"); return 2 }
+    const slug = args[1], client = value("--client")
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(slug ?? "") || !["codex", "claude"].includes(client)) {
+      console.error("task start needs a lowercase slug and --client codex|claude"); return 2
+    }
+    const target = openTarget(root)
+    if (clientFamily(target.policy.implementer?.model) !== client) {
+      console.error("the policy implementer does not match this client; configure the correct author and independent reviewer before starting"); return 2
+    }
+    const active = activeFeature(root)
+    if (active && active.slug !== slug) {
+      const l = openLedger(root, active.slug, { create: false })
+      const ledger = l.ok ? readLedger(l.path, l.key) : null
+      const done = ledger?.ok ? [...ledger.entries].reverse().find(e => e.gate === "Complete") : null
+      if (done?.status !== "PASS" || done.digest !== active.digest || done.tree !== treeDigest(root)) {
+        console.error(`active feature ${active.slug} is not complete; do not replace another task silently`); return 2
+      }
+    }
+    if (!active || active.slug !== slug) {
+      const code = await COMMANDS.new([slug, "--target", root])
+      if (code !== 0) return code
+    }
+    writeSession(root, id, { slug, client, paused: false, at: new Date().toISOString() })
+    console.log(`task ${slug} enrolled; follow gatectl next --json`)
+    return 0
+  },
   async init(args) {
     const root = targetRoot(args)
+    const clientIndex = args.indexOf("--client")
+    const client = clientIndex < 0 ? null : args[clientIndex + 1]
+    if (client !== null && !["codex", "claude"].includes(client)) { console.error("--client must be codex or claude"); return 2 }
     const policyPath = path.join(resolveConfigDir(root).dir, "policy.yaml")
     if (!fs.existsSync(policyPath)) {
       // Detection is offline and evidence-based: every value below was read out of a file in
@@ -388,7 +451,16 @@ export const COMMANDS = {
       const detection = detectCommands({ manifests: readManifests(root), files })
       const audit = auditTierPaths(yaml.load(template).tiers, files)
       fs.mkdirSync(path.dirname(policyPath), { recursive: true })
-      fs.writeFileSync(policyPath, renderPolicy(template, detection))
+      let rendered = renderPolicy(template, detection)
+      if (client) {
+        const config = yaml.load(rendered)
+        config.implementer = { model: client }
+        const other = client === "codex" ? "claude" : "codex"
+        config.critic = { cli: other, required_for_tiers: ["A", "B"] }
+        config.reviewer = { cli: other }
+        rendered = yaml.dump(config, { lineWidth: 110 })
+      }
+      fs.writeFileSync(policyPath, rendered)
       for (const e of detection.evidence) console.log(`detected: ${e}`)
       for (const [k, v] of Object.entries(detection.commands)) console.log(`  ${k.padEnd(13)} → ${v}`)
       // Reported, never edited: a pattern deleted today is a tier downgrade the day the repo
@@ -481,7 +553,7 @@ export const COMMANDS = {
     try {
       tier = featureTier(f, root, target.policy, changedPaths(root))
       requires = (target.policy.tiers?.[tier]?.requires ?? []).filter((g) => g !== "C")
-    } catch { /* an unresolvable tier is reported by status, not here */ }
+    } catch (e) { console.error(`next: NOT_EVALUATED - ${e.message}`); return 2 }
 
     const l = openLedger(root, f.slug, { create: false })
     const ledger = l.ok ? readLedger(l.path, l.key) : { ok: false, entries: [] }
@@ -510,13 +582,14 @@ export const COMMANDS = {
       if (!fs.existsSync(attPath) || !l.ok) return false
       try {
         const att = JSON.parse(fs.readFileSync(attPath, "utf8"))
-        return verifySignature(att, l.key) && att.tree === treeDigest(root)
+        return verifySignature(att, l.key) && att.tree === treeDigest(root) && att.spec_digest === f.digest &&
+          att.policy_digest === policyDigest(root) && gateCContext(root, target, f, "next").result?.status === "PASS"
       } catch { return false }
     })()
 
     const completion = (() => {
       const c = [...results].reverse().find((r) => r.gate === "Complete")
-      return c?.status === "PASS" ? "ACCEPT" : c ? "REJECT" : null
+      return c?.status === "PASS" && c.digest === f.digest && c.tree === treeDigest(root) ? "ACCEPT" : c ? "REJECT" : null
     })()
 
     return say(nextStep({
@@ -524,6 +597,7 @@ export const COMMANDS = {
       tree: treeDigest(root), tests: testsDigest(root, f.spec.requiredTests),
       results, requires, critique: loadFeatureCritique(f),
       hasImplementation: impl.length > 0, attested, completion, baseHint,
+      critiqueRequired: requires.includes("L") && (target.policy.critic === undefined || (target.policy.critic.required_for_tiers ?? []).includes(tier)),
     }))
   },
 
@@ -564,7 +638,7 @@ export const COMMANDS = {
     const next = appendLock(locks, { digest: f.digest, at: new Date().toISOString(), tier,
                                      requiredTests: f.spec.requiredTests, allowedPaths: f.spec.allowedPaths })
     fs.writeFileSync(lockPath, JSON.stringify(next, null, 2))
-    record(root, f.slug, { gate: "L", status: "PASS", digest: f.digest, tree: treeDigest(root), at: new Date().toISOString() })
+    record(root, f.slug, { gate: "L", status: "PASS", digest: f.digest, lock_artifact: specDigest(fs.readFileSync(lockPath, "utf8")), tree: treeDigest(root), at: new Date().toISOString() })
     console.log(next === locks ? "already locked at this digest" : `locked v${latestLock(next).version}`)
     return 0
   },
@@ -710,7 +784,10 @@ export const COMMANDS = {
     const changed = changedPaths(root)
     const run = (cmd, subst) => runCmd(root, cmd, subst)
     if (mode === "fast") {
+      if (indexDrift(root).length) { console.error("gate Gfast: FAIL - working tree has drifted from the index; stage the intended candidate before testing"); return 1 }
+      const before = treeDigest(root)
       const result = gateGfast({ run, policy: target.policy, changed })
+      if (treeDigest(root) !== before) { result.status = "FAIL"; result.reasons.push("tree changed while the gate ran; rerun on a stable candidate") }
       // I3: record Gfast too, when there's an active feature to record it against — tier C's
       // requires: [Gfast, C] can otherwise never be satisfied. Gate fast must still work with
       // no active feature (e.g. a bare pre-commit hook), so recording is best-effort.
@@ -756,8 +833,12 @@ export const COMMANDS = {
     }
 
     const diffText = currentDiffText(root)
+    const verifiedArtifacts = verifiedLockArtifacts(root, f)
+    if (indexDrift(root).length) { console.error("gate Gfull: FAIL - working tree has drifted from the index; stage the intended candidate before testing"); return 1 }
+    const before = treeDigest(root)
     const result = gateGfull({ run, policy: target.policy, changed, diffText, spec: f.spec,
-                               specDir: path.relative(root, f.dir) })
+                               specDir: path.relative(root, f.dir), verifiedArtifacts })
+    if (treeDigest(root) !== before) { result.status = "FAIL"; result.reasons.push("tree changed while the gate ran; rerun on a stable candidate") }
     record(root, f.slug, { gate: "Gfull", status: result.status, digest: f.digest, tree: treeDigest(root), at: new Date().toISOString() })
     return report("Gfull", result)
   },
@@ -839,6 +920,10 @@ export const COMMANDS = {
       const reason = ri === -1 ? null : args[ri + 1]
       if (!id || !reason) { console.error('usage: gatectl review accept <finding-id|criterion-id> --reason "why this ships anyway"'); return 2 }
       const review = loadReview(root, f.slug)
+      if (!review || review.tree !== treeDigest(root) || review.spec_digest !== f.digest || indexDrift(root).length) {
+        console.error("cannot accept a stale review: stage the current candidate and run gatectl review again")
+        return 2
+      }
       const finding = (review?.findings ?? []).find((x) => x.id === id)
       // A criterion, not a finding. Reviewers put the same objection either way — as a finding
       // one day and as `AC-07: not_implemented` the next — and only the first could be answered
@@ -849,6 +934,7 @@ export const COMMANDS = {
         return 2
       }
       record(root, f.slug, { gate: "X-accept", status: "PASS", digest: f.digest, tree: treeDigest(root),
+                             review_digest: reviewDigest(review),
                              ...(finding
                                ? { finding: id, severity: finding.severity, title: finding.title }
                                : { criterion: id, verdict: claim.verdict, title: claim.rationale ?? "" }),
@@ -856,7 +942,7 @@ export const COMMANDS = {
       if (!finding) {
         console.log(`accepted ${id}: the reviewer says "${claim.verdict}"`)
         console.log(`  reason: ${reason}`)
-        console.log("  recorded in the ledger against this spec digest — reword the criterion and the decision is taken again")
+        console.log("  bound to this exact review, spec and tree; any change requires a new acceptance")
         return 0
       }
       console.log(`accepted ${id} (${finding.severity}): ${finding.title}`)
@@ -981,7 +1067,6 @@ export const COMMANDS = {
     const f = activeFeature(root)
     if (refuseUncompiled(f)) return 2
     if (!f?.spec) { console.error("no active feature"); return 2 }
-    if (!target.policy.commands?.test_file) { console.error("policy has no command for test_file"); return 2 }
     const ctx = gateCContext(root, target, f, "complete")
     if (ctx.code !== undefined) return ctx.code
 
@@ -1003,16 +1088,18 @@ export const COMMANDS = {
       const att = JSON.parse(fs.readFileSync(attPath, "utf8"))
       if (!verifySignature(att, ctx.key)) attestation = { ok: false, detail: "the attestation does not verify" }
       else if (att.tree !== tree) attestation = { ok: false, detail: "the attestation is for a different tree" }
+      else if (att.spec_digest !== f.digest || att.policy_digest !== policyDigest(root)) attestation = { ok: false, detail: "the attestation is for a different specification or policy" }
       else attestation = { ok: true, att }
     }
 
     const decision = decideCompletion({
       spec: { ...f.spec, digest: f.digest, tree },
-      obligations, red, green, gateC: ctx.result, attestation,
+      obligations, red, green, gateC: ctx.result, attestation, requires: ctx.requires,
     })
     const record0 = signAttestation({
       feature: f.slug, rda_version: VERSION, authority: "deterministic_policy_engine",
       decision: decision.decision, failed_predicates: decision.failed_predicates,
+      basis: decision.basis, skipped: decision.skipped,
       spec_digest: f.digest, policy_digest: policyDigest(root), tree: ctx.tree,
       head: (() => { try { return gitOut(root, "rev-parse HEAD") } catch { return null } })(),
       obligations, tier: ctx.tier, env: environment({ commands: target.policy.commands ?? {} }),
@@ -1250,11 +1337,11 @@ export const COMMANDS = {
     try {
       execSync(`git worktree add -q --detach ${dir} ${sha}`, { cwd: root, stdio: "pipe" })
       const policy = yaml.load(policyText)
-      const steps = [["install", policy.commands?.install], ["build", policy.commands?.build], ["full suite", policy.commands?.test_all]]
+      const steps = [["install", policy.commands?.install], ["typecheck", policy.commands?.typecheck], ["build", policy.commands?.build], ["full suite", policy.commands?.test_all]]
       const reran = []
       for (const [name, cmd] of steps) {
         if (cmd === undefined) {
-          // install is genuinely optional; build and test_all are not, and an absent one means
+          // install is optional; typecheck, build and test_all must be declared. An absent one means
           // this commit cannot be independently re-run at all.
           if (name === "install") continue
           console.log(`rerun: NOT_EVALUATED\n  - the policy at this commit declares no ${name} command`)
@@ -1270,15 +1357,17 @@ export const COMMANDS = {
         console.log(`  ~ re-ran ${name}: exit 0`)
         reran.push(name)
       }
-      console.log(`rerun ${sha.slice(0, 12)}: PASS — the gates were re-run at this commit and still agree`)
+      console.log(`rerun ${sha.slice(0, 12)}: PASS — declared command checks passed at this commit; full policy gates were not re-evaluated`)
 
-      const notRerun = (requires ?? []).filter((g) => !["Gfull", "Gfast"].includes(g))
+      const notRerun = [...(requires ?? [])]
+      // The command checks ran; the full gates also include scope and selected-test checks.
+      const commandGates = Object.fromEntries(reran.filter(name => name !== "install").map(name => [({ typecheck: "Typecheck", build: "Build", "full suite": "TestSuite" })[name], "PASS"]))
       const body = {
         issuer: process.env.GITHUB_WORKFLOW
           ? `github-actions:${process.env.GITHUB_WORKFLOW}#${process.env.GITHUB_RUN_ID ?? "?"}.${process.env.GITHUB_RUN_ATTEMPT ?? "?"}`
           : "gatectl verify --rerun",
         feature, tier, requires, commit: sha, tree,
-        spec_digest: specText ? specDigest(specText) : null, policy_digest: specDigest(policyText),
+        spec_digest: digestOfSpec, policy_digest: specDigest(policyText),
         rda_version: VERSION, reran,
         claim_checked: !!att,
         not_rerun: notRerun,
@@ -1303,7 +1392,7 @@ export const COMMANDS = {
           console.error("verify: NOT_EVALUATED\n  - --evidence needs --base <sha>: without the base commit there is no trusted policy to judge against")
           return 2
         }
-        const results = { reran, gates: { Gfull: "PASS" }, commands: yaml.load(policyText).commands ?? {} }
+        const results = { reran, gates: commandGates, commands: yaml.load(policyText).commands ?? {} }
         const envelope = {
           schema_version: SCHEMA_VERSION,
           repository: process.env.GITHUB_REPOSITORY ?? "(local)",
@@ -1313,9 +1402,9 @@ export const COMMANDS = {
           rda_version: VERSION, rda_binary_digest: engineDigest(),
           trusted_policy: { source_commit: baseSha, digest: specDigest(policyText) },
           candidate_policy_digest: specDigest(candidatePolicyText),
-          spec_digest: specText ? specDigest(specText) : "0".repeat(64),
+          spec_digest: digestOfSpec ?? "0".repeat(64),
           evidence_digest: evidenceDigest(results),
-          gates: { Gfull: "PASS" },
+          gates: commandGates,
           feature, tier, requires, reran, not_rerun: notRerun,
           env: environment({ commands: yaml.load(policyText).commands ?? {} }),
           issuer: body.issuer,

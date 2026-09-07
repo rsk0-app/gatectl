@@ -37,8 +37,8 @@ describe("diffChecks", () => {
     const diffText = "diff --git a/test/old.test.ts b/test/old.test.ts\r\ndeleted file mode 100644\n"
     expect(diffChecks({ ...base, changed: ["test/old.test.ts"], diffText }).join()).toContain("deleted")
   })
-  it("I4: the engine's own spec.lock.json under specDir is allowed, not meta-class-flagged", () => {
-    const r = diffChecks({ ...base, changed: ["docs/specs/csv-export/spec.lock.json", "docs/specs/ACTIVE"], diffText: "" })
+  it("a verified engine-generated lock is allowed without exempting its directory", () => {
+    const r = diffChecks({ ...base, changed: ["docs/specs/csv-export/spec.lock.json", "docs/specs/ACTIVE"], diffText: "", verifiedArtifacts: ["docs/specs/csv-export/spec.lock.json"] })
     expect(r).toEqual([])
   })
 })
@@ -94,7 +94,7 @@ describe("commands declared none", () => {
 
   it("skips a build declared none and still reaches PASS", () => {
     const { ran, run } = runner()
-    const r = gateGfull({ run, policy: { commands: { build: "none", test_all: "npm test" } },
+    const r = gateGfull({ run, policy: { commands: { typecheck: "none", build: "none", test_all: "npm test" } },
                           changed: ["src/a.js"], diffText: "", spec: SPEC, specDir: "docs/specs/f" })
     expect(r.status).toBe("PASS")
     expect(ran).toEqual(["npm test"])
@@ -103,9 +103,9 @@ describe("commands declared none", () => {
   // A green that ran everything and a green that skipped a step must not look identical.
   it("names every skipped step in the result, so the green is not silent about it", () => {
     const { run } = runner()
-    const r = gateGfull({ run, policy: { commands: { build: "none", test_all: "npm test" } },
+    const r = gateGfull({ run, policy: { commands: { typecheck: "none", build: "none", test_all: "npm test" } },
                           changed: ["src/a.js"], diffText: "", spec: SPEC, specDir: "docs/specs/f" })
-    expect(r.skipped).toEqual(["build"])
+    expect(r.skipped).toEqual(["typecheck", "build"])
   })
 
   it("skips a typecheck declared none in G-fast", () => {
@@ -119,7 +119,7 @@ describe("commands declared none", () => {
 
   it("still refuses when a command is merely absent — unknown is not the same as none", () => {
     const { run } = runner()
-    const r = gateGfull({ run, policy: { commands: { test_all: "npm test" } },
+    const r = gateGfull({ run, policy: { commands: { typecheck: "none", test_all: "npm test" } },
                           changed: ["src/a.js"], diffText: "", spec: SPEC, specDir: "docs/specs/f" })
     expect(r.status).toBe("NOT_EVALUATED")
     expect(r.reasons.join()).toContain("build")
@@ -127,7 +127,7 @@ describe("commands declared none", () => {
 
   it("a step that runs and fails still fails, none or not elsewhere", () => {
     const run = (cmd) => (cmd === "npm test" ? { code: 1, output: "boom" } : { code: 0, output: "" })
-    const r = gateGfull({ run, policy: { commands: { build: "none", test_all: "npm test" } },
+    const r = gateGfull({ run, policy: { commands: { typecheck: "none", build: "none", test_all: "npm test" } },
                           changed: ["src/a.js"], diffText: "", spec: SPEC, specDir: "docs/specs/f" })
     expect(r.status).toBe("FAIL")
   })

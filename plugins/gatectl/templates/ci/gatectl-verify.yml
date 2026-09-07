@@ -1,0 +1,116 @@
+# Installed by `gatectl init --with-ci`. Two jobs, and the split is the point.
+#
+#   run     — executes this pull request's code: install, build, tests. It is handed NO secrets,
+#             because `pnpm install` alone runs arbitrary lifecycle scripts from the branch under
+#             test, and a signing key in that environment is a key that branch can read. It
+#             writes an UNSIGNED evidence envelope, into RUNNER_TEMP rather than the workspace,
+#             so a process the tests leave running cannot rewrite it before it is uploaded.
+#
+#   attest  — holds the key and executes nothing from the repository. It re-checks every claim in
+#             the envelope against sources this branch cannot write — its own GitHub context and
+#             git — and signs only what survives.
+#
+# What this buys: the key cannot be stolen, evidence from another run or another commit cannot be
+# passed off as this one's, and a branch cannot relax the policy that judges it. What it does NOT
+# buy: truthful command results. A job that runs repository code can lie about what that code
+# did. Bounding that is the sandbox's job — see `sandbox:` in the policy — not cryptography's.
+#
+# Setup, once:
+#   gatectl keygen                              # writes .gatectl/attest.pub (commit it) + a private key
+#   gh secret set GATECTL_SIGNING_KEY < ~/.gatectl/state/keys/<repo>.issuer.pem
+#   rm ~/.gatectl/state/keys/<repo>.issuer.pem  # a developer machine has no reason to hold it
+#
+# And on the GitHub side, without which this is decoration: make `attest` a REQUIRED check, and
+# keep `.github/workflows/**`, `.gatectl/**` and the public key under CODEOWNERS.
+name: gatectl verify
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: run (untrusted — no secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # verify reads the spec and policy AT the commit, and diffs it
+
+      # The referee must not ship from the branch it referees. Pin it, and bump the pin in its
+      # own reviewed commit.
+      - name: check out the pinned referee
+        uses: actions/checkout@v4
+        with:
+          repository: your-org/rsk-delivery-agent
+          ref: v0.12.0
+          path: .gatectl-engine
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: install the referee's own dependencies
+        run: npm ci --omit=dev
+        working-directory: .gatectl-engine
+
+      # No `env:` block. Nothing secret exists in this job.
+      - name: re-run the gates and write evidence
+        run: |
+          node .gatectl-engine/bin/gatectl.mjs verify \
+            --commit ${{ github.event.pull_request.head.sha }} \
+            --base ${{ github.event.pull_request.base.sha }} \
+            --rerun --evidence "$RUNNER_TEMP/rda-evidence.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rda-evidence
+          path: ${{ runner.temp }}/rda-evidence.json
+
+  attest:
+    name: attest (trusted — holds the key, runs no repository code)
+    needs: run
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout only. Nothing from this repository is installed, built or executed in this job —
+      # git objects are read, and that is all.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: check out the pinned referee
+        uses: actions/checkout@v4
+        with:
+          repository: your-org/rsk-delivery-agent
+          ref: v0.12.0
+          path: .gatectl-engine
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: install the referee's own dependencies
+        run: npm ci --omit=dev
+        working-directory: .gatectl-engine
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rda-evidence
+          path: ${{ runner.temp }}/evidence
+
+      - name: check the evidence against this commit, then sign
+        env:
+          GATECTL_SIGNING_KEY: ${{ secrets.GATECTL_SIGNING_KEY }}
+        run: |
+          node .gatectl-engine/bin/gatectl.mjs attest \
+            --evidence "$RUNNER_TEMP/evidence/rda-evidence.json" \
+            --commit ${{ github.event.pull_request.head.sha }} \
+            --base ${{ github.event.pull_request.base.sha }} \
+            --out "$RUNNER_TEMP/rda-issued.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rda-issued-verdict
+          path: ${{ runner.temp }}/rda-issued.json

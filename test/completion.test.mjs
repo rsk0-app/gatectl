@@ -25,7 +25,7 @@ const names = (r) => r.failed_predicates.map((f) => f.predicate)
 
 describe("completion authority", () => {
   it("ACCEPTs only when every predicate holds", () => {
-    expect(decideCompletion(OK)).toEqual({ decision: "ACCEPT", failed_predicates: [] })
+    expect(decideCompletion(OK)).toMatchObject({ decision: "ACCEPT", failed_predicates: [], basis: "criterion_red_green" })
   })
 
   // The pair of halves is the whole idea.

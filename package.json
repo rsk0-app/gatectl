@@ -1,6 +1,6 @@
 {
   "name": "gatectl",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "type": "module",
   "bin": {
     "gatectl": "bin/gatectl.mjs"
@@ -10,15 +10,18 @@
   },
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build:plugin": "node scripts/build-plugin.mjs",
+    "check:plugin": "node scripts/build-plugin.mjs --check"
   },
   "dependencies": {
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {
+    "esbuild": "0.28.2",
     "vitest": "^4.0.0"
   },
-  "description": "A gate engine that decides, by policy and exit code, whether work may be called done \u2014 the control plane for what an AI agent may call done.",
+  "description": "A gate engine that decides, by policy and exit code, whether work may be called done — the control plane for what an AI agent may call done.",
   "license": "Apache-2.0",
   "keywords": [
     "gate",
@@ -43,6 +46,7 @@
     "schemas",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "plugins/gatectl"
   ]
 }

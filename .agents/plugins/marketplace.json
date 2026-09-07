@@ -1,0 +1,20 @@
+{
+  "name": "gatectl",
+  "interface": {
+    "displayName": "Gatectl"
+  },
+  "plugins": [
+    {
+      "name": "gatectl",
+      "source": {
+        "source": "local",
+        "path": "./plugins/gatectl"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

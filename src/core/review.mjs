@@ -118,6 +118,10 @@ export function validateReview(review) {
   return { ok: errors.length === 0, errors }
 }
 
+// An exception belongs to the exact review, specification and candidate that were accepted.
+// A repeated title is not evidence that a later objection has the same scope.
+export const reviewDigest = (review) => crypto.createHash("sha256").update(JSON.stringify(review)).digest("hex")
+
 // The gate. Everything it decides is a fact about the review, the spec and the tree.
 export function gateX({ review, compiled, tree, changed = [], implementer, acceptances = [], readLines }) {
   if (!changed.length) return { status: "NOT_EVALUATED", reasons: ["empty diff — nothing to review"] }
@@ -176,10 +180,12 @@ export function gateX({ review, compiled, tree, changed = [], implementer, accep
   // scope. A protocol whose escape hatch depends on how a model phrased its objection is a
   // protocol that blocks by accident.
   //
-  // The acceptance is bound to the SPEC DIGEST it was taken against, so rewording the criterion
+  // The acceptance is bound to the exact spec, candidate tree and review, so rewording the criterion
   // makes it a different criterion and the decision has to be taken again.
+  const currentAcceptances = acceptances.filter((a) =>
+    a.digest === review.spec_digest && a.tree === tree && a.review_digest === reviewDigest(review) && isStr(a.reason))
   const acceptedCriteria = new Map(
-    acceptances
+    currentAcceptances
       .filter((a) => a.criterion && (!compiled?.digest || a.digest === compiled.digest))
       .map((a) => [a.criterion, a]),
   )
@@ -204,9 +210,9 @@ export function gateX({ review, compiled, tree, changed = [], implementer, accep
   // alone would silently clear a finding nobody ever read.
   // An entry written before titles were recorded carries none, and matching it by id alone is
   // what it meant when it was written. Anything with a title is held to it.
-  const byFinding = acceptances.filter((a) => a.finding)
+  const byFinding = currentAcceptances.filter((a) => a.finding)
   const isAccepted = (f) =>
-    byFinding.some((a) => a.finding === f.id && (a.title === undefined || a.title === f.title))
+    byFinding.some((a) => a.finding === f.id && a.title === f.title)
   const open = (review.findings ?? []).filter((f) => SEVERE.has(f.severity) && !isAccepted(f))
   if (open.length)
     return { status: "FAIL", verified,

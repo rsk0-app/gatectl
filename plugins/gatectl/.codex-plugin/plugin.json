@@ -1,0 +1,23 @@
+{
+  "name": "gatectl",
+  "version": "0.15.0",
+  "description": "Run repository tasks through policy gates, replayable tests and explicit completion.",
+  "author": {
+    "name": "RSK0"
+  },
+  "repository": "https://github.com/rsk0-app/gatectl",
+  "license": "Apache-2.0",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "gatectl",
+    "shortDescription": "Evidence before done, for repository tasks.",
+    "longDescription": "A shared local CLI drives specification, tests, review and completion in enabled repositories. Includes automatic task context and bounded completion reminders.",
+    "developerName": "RSK0",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "Set up gatectl for this repository.",
+      "Implement this task through gatectl."
+    ]
+  }
+}

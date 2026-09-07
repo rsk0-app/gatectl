@@ -43,6 +43,7 @@ export function validateSpec(spec) {
   if (spec.allowed_paths !== undefined && (!Array.isArray(spec.allowed_paths) || spec.allowed_paths.length === 0))
     errors.push("allowed_paths must be a non-empty list — a feature that may touch anything has no scope")
 
+  if (spec.verification !== undefined && spec.verification !== "policy") errors.push("verification must be policy when provided")
   const seenIds = new Set()
   const seenTests = new Map()
 
@@ -65,6 +66,7 @@ export function validateSpec(spec) {
     if (!isNonEmptyString(ac?.statement)) errors.push(`acceptance_criteria[${i}].statement must be a non-empty string`)
 
     // The rule the whole file exists for: a promise with no test behind it is not a criterion.
+    if (!ac?.test && spec.verification === "policy") return
     if (!ac?.test || typeof ac.test !== "object") {
       errors.push(`acceptance_criteria[${i}] (${ac?.id ?? "?"}) names no test — every criterion must be provable`)
       return
@@ -96,7 +98,7 @@ export function validateSpec(spec) {
 // RED before the implementation, GREEN after. Gate R and the Completion Authority read this and
 // nothing else — neither of them ever parses prose.
 export function obligations(spec) {
-  return (spec.acceptance_criteria ?? []).map((ac) => ({
+  return (spec.acceptance_criteria ?? []).filter((ac) => ac.test).map((ac) => ({
     criterion: ac.id,
     statement: ac.statement,
     file: ac.test.file,
@@ -114,6 +116,7 @@ export function compileSpec(spec) {
   const check = validateSpec(spec)
   if (!check.ok) return { ok: false, errors: check.errors }
   const compiled = {
+    ...(spec.verification === "policy" ? { verification: "policy" } : {}),
     id: spec.id,
     state: spec.state,
     mvp_ref: spec.mvp_ref,
@@ -122,7 +125,7 @@ export function compileSpec(spec) {
     acceptance_criteria: spec.acceptance_criteria.map((ac) => ({
       id: ac.id,
       statement: ac.statement.trim(),
-      test: { file: ac.test.file, selector: ac.test.selector ?? null, expected_red: ac.test.expected_red ?? "assertion" },
+      ...(ac.test ? { test: { file: ac.test.file, selector: ac.test.selector ?? null, expected_red: ac.test.expected_red ?? "assertion" } } : {}),
     })),
     allowed_paths: [...spec.allowed_paths],
     rollback: { strategy: spec.rollback.strategy, notes: spec.rollback.notes ?? null },
@@ -145,7 +148,7 @@ export function compileSpec(spec) {
 // been validated, so nothing here re-decides anything, it only renames.
 export function specFromCompiled(compiled) {
   const requiredTests = []
-  for (const ac of compiled.acceptance_criteria) if (!requiredTests.includes(ac.test.file)) requiredTests.push(ac.test.file)
+  for (const ac of compiled.acceptance_criteria) if (ac.test && !requiredTests.includes(ac.test.file)) requiredTests.push(ac.test.file)
   return {
     state: compiled.state,
     mvpRef: compiled.mvp_ref,
@@ -153,12 +156,12 @@ export function specFromCompiled(compiled) {
     invariants: compiled.invariants.map((i) => `${i.id} ${i.statement}`),
     acceptanceCriteria: compiled.acceptance_criteria.map((ac) => `${ac.id} ${ac.statement}`),
     requiredTests,
-    testObligations: compiled.acceptance_criteria.map((ac) => ({
+    testObligations: compiled.acceptance_criteria.filter((ac) => ac.test).map((ac) => ({
       ac: ac.id, file: ac.test.file, selector: ac.test.selector, expectedRed: ac.test.expected_red,
     })),
     // The compiler refuses a criterion without a test, so this is empty by construction rather
     // than by luck. Gate L still checks it: one place to look when the rule changes.
-    acceptanceCriteriaWithoutTests: [],
+    acceptanceCriteriaWithoutTests: compiled.acceptance_criteria.filter((ac) => !ac.test).map((ac) => ac.id),
     allowedPaths: [...compiled.allowed_paths],
     rollback: compiled.rollback.strategy,
     blockingQuestions: [...(compiled.blocking_questions ?? [])],

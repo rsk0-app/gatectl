@@ -1,0 +1,9 @@
+{
+  "name": "gatectl-plugin-runtime",
+  "version": "0.15.0",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  }
+}

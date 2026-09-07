@@ -118,11 +118,94 @@ Pruning a dead pattern would be a tier downgrade deferred into the future: add `
 month and its migrations land in a lower tier, with nothing announcing it. Deciding what counts
 as security-sensitive stays a human signature — `gatectl` derives tiers, it does not invent them.
 
+## Codex and Claude Code plugins (0.15)
+
+The same `plugins/gatectl` package supports both hosts. It includes the CLI and its runtime
+dependencies in a generated bundle, so installation needs Node 20+ and git, but no global
+`gatectl`, npm install, API key or daemon. Each host continues using its own configured model.
+
+Install from the public marketplace:
+
+```sh
+# Codex CLI (current CLI calls this command `add`)
+codex plugin marketplace add rsk0-app/gatectl
+codex plugin add gatectl@gatectl
+
+# Claude Code
+claude plugin marketplace add rsk0-app/gatectl
+claude plugin install gatectl@gatectl
+```
+
+Start a new session after installation and review/trust the plugin hooks when the host requests
+it. In the target repository, ask “set up gatectl for this repository.” The delivery skill runs
+`init --client codex` or `init --client claude`; for a new policy, this chooses the other CLI as the
+critic/reviewer. That other CLI must be installed and authenticated when the policy requires it.
+Existing policies are never silently rewritten. Review their author/reviewer configuration when
+switching clients, and commit initial policy setup separately from feature work.
+
+After setup, ordinary implementation requests such as “сделай задачу: добавь экспорт CSV” are
+routed by the plugin context into the delivery skill. SessionStart/UserPromptSubmit hooks supply
+context only in repositories containing `.gatectl/policy.yaml`. The skill enrolls implementation
+work with `task start`; read-only questions do not enroll. A Stop hook checks `next --json` for
+that session's task and requests at most one continuation if it is incomplete. It never runs tests,
+calls another model, changes policy, installs packages or grants an exception. Cancellation pauses
+reminders without creating PASS. Host hooks and local processes are not an adversarial sandbox;
+CI and repository protection remain the enforcement boundary.
+
+Explicit invocation is also available: `/gatectl:delivery` in Claude Code, or select the gatectl
+`delivery` skill in Codex. The bundled CLI is `plugins/gatectl/bin/gatectl.mjs` in a checkout and
+`<installed-plugin-root>/bin/gatectl.mjs` after installation. Hooks supply the installed path.
+
+```sh
+node plugins/gatectl/bin/gatectl.mjs version
+node plugins/gatectl/bin/gatectl.mjs task start csv-export --session SESSION_ID --client codex --target /path/to/repo
+node plugins/gatectl/bin/gatectl.mjs next --json --target /path/to/repo
+```
+
+For a local checkout, replace the marketplace repository in the installation commands with the
+absolute checkout path. Claude Code can also load it for a session with
+`claude --plugin-dir /absolute/path/to/gatectl/plugins/gatectl`. Codex installation alone does not
+trust the hooks: review the host's hook-trust prompt before relying on automatic reminders.
+
+The package formats and shared hook protocol follow the
+[Codex hooks reference](https://learn.chatgpt.com/docs/hooks) and
+[Claude Code plugin reference](https://code.claude.com/docs/en/plugins-reference).
+
+### Policy-only work
+
+`next` and `complete` follow the gates the effective tier actually requires. A docs-only tier C
+with `requires: [Gfast]` does not require critique, lock or fabricated RED/GREEN tests. Its YAML
+spec can explicitly declare `verification: policy` and give acceptance criteria without `test`.
+If its actual scope escalates to a tier requiring R, the missing tests block delivery.
+
+Completion records say `basis: policy_gates` and list the per-criterion predicates not claimed.
+Tiers requiring R retain replayed RED and final-tree GREEN for every criterion and report
+`basis: criterion_red_green`. ACCEPT means the configured evidence obligations passed; it is not
+proof that the specification was sufficient or every test asserted the right behavior.
+
+### Updating from 0.14
+
+- Declare `commands.typecheck` for Gfull and verifier command reruns. Use `none` only when the
+  project genuinely has no typecheck. An absent command now refuses evaluation.
+- Old review acceptances have no current-review binding and no longer clear findings. Re-review
+  and obtain an explicit acceptance for the exact review, spec and tree if the exception still applies.
+- A modified active `spec.lock.json` is allowed locally only when its exact bytes match the signed
+  gate-L record. Existing locks need a fresh `lock` record before a changed lock is shipped.
+  Other files in that directory do not acquire a blanket exemption from meta-class or scope checks.
+- `verify --rerun` reports the command checks it actually reran (`Typecheck`, `Build`, `TestSuite`),
+  and keeps full gate names in `not_rerun`. It does not claim that running build/tests re-evaluates
+  Gfull scope checks, Gfast test selection, replayed RED or model review. Skipped commands are not
+  recorded as executed checks. Consumers expecting an issued `Gfull: PASS` must adopt these labels.
+- Reinstall/update the plugin in each host and start a new session. The CLI and both plugin
+  manifests carry the same version. `npm run check:plugin` refuses a stale generated runtime.
+
 ## Commands
 
 | Command | What it does | Exit codes |
 | --- | --- | --- |
-| `gatectl init` | Scaffold `.gatectl/policy.yaml` and `.gatectl/MVP.yaml` (idempotent) | `0` |
+| `gatectl version` | Print the engine version | `0` |
+| `gatectl task start/pause` | Enroll or pause a plugin session without changing gate evidence | `0`, `2` |
+| `gatectl init [--client codex\|claude]` | Scaffold `.gatectl/policy.yaml` and `.gatectl/MVP.yaml` (idempotent) | `0` |
 | `gatectl new <slug>` | Scaffold `docs/specs/<slug>/spec.yaml` + `spec.md` and set it ACTIVE | `0`, `2` (usage) |
 | `gatectl next [--json]` | What to do now, and why — the state is derived, never stored | `0`, `2` |
 | `gatectl spec compile` | Validate the spec and print the test obligations the gates will hold it to | `0`, `2` |
@@ -132,14 +215,14 @@ as security-sensitive stays a human signature — `gatectl` derives tiers, it do
 | `gatectl red [--base <sha>]` | Gate R: replay `base + the test changes` and require every criterion RED for its own declared reason | `0`/`1`/`2` |
 | `gatectl green` | The other half: every criterion's test, on the tree in front of us, required to pass | `0`/`1`/`2` |
 | `gatectl gate fast` | Gate G-fast: typecheck + related tests against the current diff | `0`/`1`/`2` |
-| `gatectl gate full` | Gate G-full: build + full suite + diff-scope checks (allowed paths, meta-class, no `.only`/`.skip`, no deleted tests) | `0`/`1`/`2` |
+| `gatectl gate full` | Gate G-full: typecheck + build + full suite + diff-scope checks (allowed paths, meta-class, no `.only`/`.skip`, no deleted tests) | `0`/`1`/`2` |
 | `gatectl review` | Run the policy's **reviewer** model over the current diff, write the review | `0`, `2` (reviewer failed to run) |
 | `gatectl gate x` | Gate X: the review exists, covers this diff, and has no unresolved critical/high finding | `0`/`1`/`2` |
 | `gatectl commit-check` | Gate C: every gate this feature's **effective** tier `requires` is green, for the **current** spec digest *and* the current state each of those gates inspected, and the working tree has not drifted from the index | `0`/`1`/`2` |
 | `gatectl verify` | Check a claim against the commit it is about; `--rerun` re-runs that commit's gates; `--issue` signs the result | `0`/`1`/`2` |
 | `gatectl attest` | Check an evidence envelope against this commit and sign it — the signer, which runs no repository code | `0`/`1`/`2` |
 | `gatectl keygen` | Create the issuer keypair: private key for CI's secret, public key for the repository | `0`, `2` |
-| `gatectl complete` | The Completion Authority: is what the spec promised actually delivered? | `0` ACCEPT / `1` REJECT / `2` |
+| `gatectl complete` | The Completion Authority: have the policy evidence obligations been met? | `0` ACCEPT / `1` REJECT / `2` |
 | `gatectl export` | Publish this feature's delivery record to team memory (`--dry-run` prints it instead) | `0`, `2` |
 
 Every gate result is appended to a signed ledger that lives **outside the target repository**
@@ -560,12 +643,13 @@ It re-runs the commit and signs what it found:
 
 ```json
 { "issuer": "github-actions:gatectl verify", "commit": "e2a0638…", "tree": "1950a6b…",
-  "reran": ["build", "full suite"], "not_rerun": ["L", "R"], "claim_checked": false,
+  "reran": ["typecheck", "build", "full suite"], "not_rerun": ["L", "R", "Gfull"], "claim_checked": false,
   "alg": "ed25519", "sig": "…" }
 ```
 
 `not_rerun` is the part that keeps this honest. A CI runner has no model to redo gate X with and
-no ledger to redo gate L or R from, so it says so rather than implying it checked everything. A
+no ledger to redo gate L or R from. Command reruns also do not repeat Gfull scope checks or
+Gfast test selection, so those gates remain in `not_rerun` too. A
 verdict that overstated its own reach would be the exact failure this engine exists to prevent,
 one level up.
 
@@ -851,8 +935,8 @@ Stated plainly, because a gate engine that overstates its own authority is worse
   tests. Closing that needs the commands to execute inside a disposable container with no
   network, no credentials and no writable path the evidence lives on — the next piece of work,
   not a property of today's signature.
-- **Gate X does not run in the verifier yet.** The review is produced locally, so a CI verdict
-  covers `Gfull` and says so in `not_rerun`. Independent review means the verifier calls the
+- **Gate X does not run in the verifier yet.** The review is produced locally. A CI verdict
+  names its command checks and explicitly lists the full gates in `not_rerun`. Independent review means the verifier calls the
   model itself on the final diff; until then X is a local gate.
 - **Locally, the key and the agent share a machine.** The HMAC record is a real boundary against
   an agent editing its own evidence by accident or by shortcut; it is not one against an agent

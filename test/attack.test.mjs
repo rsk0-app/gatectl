@@ -31,7 +31,7 @@ const POLICY = [
   "    paths: ['src/**', 'test/**']",
   "    requires: [L, R, Gfull]",
   "commands:",
-  "  build: 'true'",
+  "  typecheck: none", "  build: 'true'",
   "  test_all: 'true'",
   "  test_file: 'node red-if-missing.mjs {file}'",
   "  test_case: 'node red-if-missing.mjs {file} {selector}'",
