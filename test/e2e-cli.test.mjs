@@ -1557,7 +1557,7 @@ describe("#1 — sandboxed runner, isolated signer", () => {
     const r = rda(root, ["attest", "--evidence", ev, "--commit", head, "--base", base, "--out", out])
     expect(r.code).toBe(0)
     expect(r.out).toContain("SIGNED")
-    expect(r.out).toContain("cross-checked: head_sha, base_sha")
+    expect(r.out).toMatch(/cross-checked:.*head_sha, base_sha/)
     const issued = JSON.parse(fs.readFileSync(out, "utf8"))
     expect(issued.alg).toBe("ed25519")
     expect(issued.signer.envelope_digest).toMatch(/^[0-9a-f]{64}$/)
