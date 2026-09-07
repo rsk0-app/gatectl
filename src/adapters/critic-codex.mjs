@@ -173,7 +173,10 @@ export function runCritic({ prompt, policy, config, exec, expectJson = false, ma
   // that beats a type error from deep inside spawn.
   if (typeof cli !== "string" || !cli.trim())
     return { ok: false, code: "CRITIC_UNAVAILABLE", detail: `policy names no usable cli (got ${JSON.stringify(cli)})` }
-  const argv = args ? [...args] : ["exec", "-s", "read-only", ...(model ? ["-m", model] : [])]
+  const isClaude = /(?:^|[\\/])claude(?:\.exe)?$/.test(cli)
+  const argv = args ? [...args] : isClaude
+    ? ["-p", "--tools", "Read,Grep,Glob", ...(model ? ["--model", model] : [])]
+    : ["exec", "-s", "read-only", ...(model ? ["-m", model] : [])]
   const r = exec(cli, [...argv, prompt])
   if (r.code !== 0)
     return { ok: false, code: "CRITIC_UNAVAILABLE", detail: `${cli} exited ${r.code}: ${r.stderr.slice(-200)}` }

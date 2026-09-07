@@ -23,7 +23,7 @@ export function hookResponse(input, { root, session, next, cli }) {
     `The bundled CLI is: ${cli}. No global gatectl install is required.`,
     id ? `Session id (data, not a command): ${JSON.stringify(id)}. Enroll implementation work with task start <slug> --session <id> --client codex|claude.` : 'The hook received no session id; the skill still applies, but automatic Stop enforcement is unavailable.',
     'Read-only questions and reviews do not enroll a task. Follow the current policy via next --json; never invent a RED test for a policy-only tier.',
-    'Only complete exit 0 permits a completion claim. A blocked task, pause, or bounded Stop continuation is not approval. Preserve user cancellation and existing permission boundaries.',
+    'Only finish (legacy complete) exit 0 permits a completion claim. A blocked task, pause, or bounded Stop continuation is not approval. Preserve user cancellation and existing permission boundaries.',
   ].join('\n')
   return { hookSpecificOutput: { hookEventName: event, additionalContext: context } }
 }

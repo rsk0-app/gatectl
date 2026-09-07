@@ -118,6 +118,63 @@ Pruning a dead pattern would be a tier downgrade deferred into the future: add `
 month and its migrations land in a lower tier, with nothing announcing it. Deciding what counts
 as security-sensitive stays a human signature — `gatectl` derives tiers, it does not invent them.
 
+## Fast delivery (0.16)
+
+New repositories default to a local fast workflow, with no mandatory RED replay or CI:
+
+```sh
+gatectl init --client codex --mode fast  # or --client claude
+# During implementation:
+gatectl check-related
+# Once a complete stage is ready:
+gatectl check
+gatectl review
+gatectl review-check
+gatectl ready-to-commit
+gatectl finish
+```
+
+`check-related` runs only the configured related tests. `check` performs the final declared tests,
+typecheck and build. In strict mode it also proves criterion GREEN. Identical expanded commands
+share signed local receipts: test-green and check-all do not execute the same command twice over
+the same inputs. A whole-suite command never implicitly proves a different per-case command.
+`next`, `ready-to-commit` and `finish` only read evidence; none invokes tests or a model.
+
+Fast review runs once per candidate. After edits, it supplies the difference from the previous
+reviewed tree and the previous report, and requires an updated report covering every criterion,
+including explanations for resolved severe findings. `review --full` requests the complete diff;
+spec or reviewer-configuration changes automatically require a full review. These are model
+judgments; structured coverage does not prove the reasoning correct.
+
+Receipt reuse checks the candidate tree, expanded command, policy, runtime, environment, executable
+metadata, dependency metadata (`node_modules`, `.venv`) and common ignored `.env` files. Set
+`workflow.dependency_paths` and `workflow.input_paths` for other local inputs. These are filesystem
+metadata checks, not a sandbox or proof of reproducible execution. For remote services, time-sensitive
+tests or other external inputs use `check --fresh`, or set `workflow.cache: false`. Failed forced
+reruns invalidate earlier success. No network service or CI installation is needed for fast mode.
+
+Existing policies are **not** silently relaxed. To opt in explicitly, run `gatectl workflow fast`,
+review the policy diff and commit setup separately. Fast mode requires final checks and independent
+review for every tier. `gatectl workflow strict` restores saved tier requirements; a new strict
+repository uses `init --mode strict`. RED and independent reruns belong to this explicitly chosen
+workflow, not the normal edit loop. A policy-only spec must gain real test obligations when moving
+to strict requirements.
+
+| Purpose | Readable command | Legacy alias |
+| --- | --- | --- |
+| Check spec | `spec-check` | `lock` / L |
+| Prove RED | `test-red` | `red` / R |
+| Prove GREEN | `test-green` | `green` |
+| Related tests while editing | `check-related` | — |
+| Final policy checks | `check` | — |
+| Full checks | `check-all` | `gate full` / Gfull |
+| Validate review | `review-check` | `gate x` / X |
+| Commit readiness | `ready-to-commit` | `commit-check` / C |
+| Finish task | `finish` | `complete` |
+
+Legacy commands and ledger/policy identifiers remain supported. `next --legacy-names --json`
+retains old command names for existing integrations (new workflow policies still suggest `check`).
+
 ## Codex and Claude Code plugins (0.15)
 
 The same `plugins/gatectl` package supports both hosts. It includes the CLI and its runtime

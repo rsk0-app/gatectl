@@ -15,7 +15,7 @@ const stateFor = (root) => `${root}-state`
 function rda(root, args, extraEnv = {}) {
   const env = { ...process.env, GATECTL_STATE_DIR: stateFor(root), ...extraEnv }
   try {
-    return { code: 0, out: execFileSync("node", [BIN, ...args, "--target", root], { encoding: "utf8", env }) }
+    return { code: 0, out: execFileSync("node", [BIN, ...args, "--legacy-names", "--target", root], { encoding: "utf8", env }) }
   } catch (e) { return { code: e.status, out: `${e.stdout ?? ""}${e.stderr ?? ""}` } }
 }
 const git = (root, cmd) => execSync(`git -c user.email=t@t -c user.name=t ${cmd}`, { cwd: root })

@@ -230,3 +230,11 @@ export function gateX({ review, compiled, tree, changed = [], implementer, accep
     coverage: { targets: targets.length, citations: verified.length, in_diff: citationsInDiff },
   }
 }
+
+// A follow-up may resolve or downgrade a severe finding, but must explain that decision.
+export function followUpErrors(prior, review) {
+  return (prior.findings ?? []).filter(f => SEVERE.has(f.severity) &&
+    !(review.findings ?? []).some(n => n.id === f.id && SEVERE.has(n.severity)))
+    .filter(f => !(review.resolved_findings ?? []).some(r => r.id === f.id && isStr(r.reason)))
+    .map(f => `${f.id}: severe finding removed or downgraded without a resolution reason`)
+}

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.0 — 2026-09-07
+
+- Fast local workflow is the new-project default: related tests during edits, one final check pipeline, independent review and explicit finish. Existing policies stay unchanged until owner opt-in.
+- Signed command receipts reuse exact successful executions across GREEN/full checks and invocations. Code, environment, command, policy and configured dependency/input metadata changes invalidate them; `--fresh` bypasses reuse and failed reruns invalidate prior success.
+- Fast follow-up reviews receive the delta and prior report, preserve unresolved findings and still account for all criteria. Unchanged candidates reuse their review; `--full` requests a complete review.
+- Readable commands replace gate abbreviations in the normal flow; old commands and ledger keys remain compatible. `next`/`finish` do not execute checks.
+- Claude reviewers now use print mode with read-only tools by default, instead of receiving Codex flags.
+- Both bundled plugins teach the fast loop; strict RED and independent verification remain explicit choices.
+
 ## 0.15.0 — 2026-09-07
 
 Repository tasks can run through gatectl from Codex or Claude Code plugins.

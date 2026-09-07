@@ -45,7 +45,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: rsk0-app/gatectl
-          ref: v0.15.0
+          ref: v0.16.0
           path: .gatectl-engine
 
       - uses: actions/setup-node@v4
@@ -84,7 +84,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: rsk0-app/gatectl
-          ref: v0.15.0
+          ref: v0.16.0
           path: .gatectl-engine
 
       - uses: actions/setup-node@v4

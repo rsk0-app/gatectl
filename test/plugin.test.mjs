@@ -56,7 +56,7 @@ describe('shared plugin hook protocol',()=>{
 describe('installed plugin runtime without a global CLI or node_modules',()=>{
   it('does nothing in repositories that have not opted in',()=>{
     const f=fixture(); expect(f.hook({hook_event_name:'SessionStart'})).toEqual({})
-    expect(f.cli('version')).toMatchObject({code:0,out:'0.15.0\n'})
+    expect(f.cli('version')).toMatchObject({code:0,out:'0.16.0\n'})
     expect(fs.existsSync(path.join(f.installed,'node_modules'))).toBe(false)
   })
   it('runs a complete tier C task and rejects edits after completion',()=>{
@@ -92,7 +92,7 @@ rollback: {strategy: Revert the guide.}
 `)
     fs.writeFileSync(path.join(f.root,'docs/guide.md'),'Install gatectl\n')
     const step=()=>JSON.parse(f.cli('next','--json').out)
-    expect(step().next_command).toBe('gatectl gate fast')
+    expect(step().next_command).toBe('gatectl check')
     expect(f.hook({hook_event_name:'Stop'}).decision).toBe('block')
     f.git('add','docs')
     expect(f.cli('gate','fast').code).toBe(0)

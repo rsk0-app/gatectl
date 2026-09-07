@@ -150,7 +150,7 @@ export function childEnv(env, allow = []) {
   return out
 }
 
-export function runCmd(root, cmdTemplate, subst = {}, { env = process.env, allow = [] } = {}) {
+export function commandArgv(cmdTemplate, subst = {}) {
   const argv = []
   for (const token of cmdTemplate.trim().split(/\s+/).filter(Boolean)) {
     if (token === "{file}") argv.push(subst.file ?? "")
@@ -158,6 +158,11 @@ export function runCmd(root, cmdTemplate, subst = {}, { env = process.env, allow
     else if (token === "{files}") argv.push(...(subst.files ?? []))
     else argv.push(token)
   }
+  return argv
+}
+
+export function runCmd(root, cmdTemplate, subst = {}, { env = process.env, allow = [] } = {}) {
+  const argv = commandArgv(cmdTemplate, subst)
   const r = spawnSync(argv[0], argv.slice(1), { cwd: root, encoding: "utf8", env: childEnv(env, allow) })
   // Streams are kept apart as well as combined: `output` feeds failure classification (gate R
   // matches patterns wherever the runner printed them), while reporting needs to know which

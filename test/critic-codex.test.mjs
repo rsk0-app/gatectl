@@ -99,3 +99,9 @@ describe("runCritic — another CLI entirely", () => {
     expect(seen).toEqual(["codex", ["exec", "-s", "read-only", "P"]])
   })
 })
+
+ it("uses Claude print mode rather than Codex flags when no custom args exist", () => {
+   let seen
+   runCritic({ prompt: "P", config: { cli: "/usr/local/bin/claude", model: "chosen" }, exec: (cli, args) => { seen = args; return {code:0,stdout:'{"claims":[]}',stderr:""} }, expectJson:true })
+   expect(seen).toEqual(["-p", "--tools", "Read,Grep,Glob", "--model", "chosen", "P"])
+ })

@@ -19,7 +19,7 @@ const attestationOf = (root, slug) =>
 function rda(root, args, extraEnv = {}) {
   const env = { ...process.env, GATECTL_STATE_DIR: stateFor(root), ...extraEnv }
   try {
-    return { code: 0, out: execFileSync("node", [BIN, ...args, "--target", root], { encoding: "utf8", env }) }
+    return { code: 0, out: execFileSync("node", [BIN, ...args, "--legacy-names", "--target", root], { encoding: "utf8", env }) }
   } catch (e) { return { code: e.status, out: `${e.stdout ?? ""}${e.stderr ?? ""}` } }
 }
 function makeRepo() {
@@ -44,7 +44,7 @@ describe("gatectl new + lock (AC2, AC3)", () => {
   let root
   beforeEach(() => {
     root = makeRepo()
-    rda(root, ["init"])
+    rda(root, ["init", "--mode", "strict"])
     fs.writeFileSync(path.join(root, ".gatectl/MVP.yaml"),
       "mvp_done_when:\n  - id: works\n    text: x\nout_of_scope: []\n")
   })
@@ -707,11 +707,11 @@ describe("gatectl init — toolchain detection", () => {
     expect(r.out).toContain("left in place")
   })
 
-  it("still produces a policy rda itself can open, with tier requires untouched", () => {
+  it("still produces a policy rda itself can open, with an explicit fast workflow", () => {
     const root = withPkg({ devDependencies: { vitest: "^4" } }, { "src/a.js": "1\n" })
     rda(root, ["init"])
     const policy = fs.readFileSync(path.join(root, ".gatectl/policy.yaml"), "utf8")
-    expect(policy).toContain("requires: [L, R, Gfull, X]")
+    expect(policy).toContain("requires: [Gfull, X]")
     expect(rda(root, ["status"]).code).toBe(0)
   })
 
