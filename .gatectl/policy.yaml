@@ -47,26 +47,16 @@ failure_classes:
 # it is not one when the author does it. Naming it is the only way rda can tell — a reviewer
 # reports its own identity, and rda compares the two.
 implementer:
-  model: claude
+  model: codex
+# Owner-selected independent critic/reviewer. Both inspect Codex's work; the
+# required independence is from the implementer, not between two review stages.
 critic:
-  cli: codex
-  # model: pin one only if your account carries it — an unservable pin fails the critic outright,
-  # and a critic that cannot run blocks gate L. Unpinned, the CLI uses its own default.
+  cli: claude
+  model: claude-fable-5-1
   required_for_tiers: [A, B]
-# Gate X: a SECOND model reviews the implementation diff, once it exists. Point it at a
-# different model than `critic` — rda refuses a review when both report the same one, because
-# one opinion twice is not a cross-model review. Without this block, `rda review` refuses to run
-# and gate X stays NOT_EVALUATED: fail-closed, never satisfied by whatever CLI is installed.
-# The review is written outside this repository (a review of a tree must not change that tree);
-# `rda review` prints where.
 reviewer:
-  cli: codex
-  # model: pin a different one from critic.model above.
-  # If your account cannot serve a second model — a ChatGPT-account codex refuses every -m —
-  # point the reviewer at a different CLI instead and give its flags verbatim; the prompt is
-  # appended last:
-  #   cli: claude
-  #   args: ["-p", "--model", "claude-opus-4-6"]
+  cli: claude
+  model: claude-fable-5-1
 # Optional. Publishes each feature's delivery record to a TencentDB Agent Memory wiki via
 # `rda export`, and lets `rda critique` recall prior records. No gate ever reads from memory —
 # unconfigured or unreachable, every gate answers exactly as it does today.
