@@ -204,7 +204,12 @@ After setup, ordinary implementation requests such as “сделай задач
 routed by the plugin context into the delivery skill. SessionStart/UserPromptSubmit hooks supply
 context only in repositories containing `.gatectl/policy.yaml`. The skill enrolls implementation
 work with `task start`; read-only questions do not enroll. A Stop hook checks `next --json` for
-that session's task and requests at most one continuation if it is incomplete. It never runs tests,
+that session's task and requests one blocking continuation per unchanged candidate and enrollment
+in sequential calls. Later status turns receive an explicit incomplete advisory with the current
+next command. Code changes (including untracked files) or `task start` rearm the reminder.
+Reminders live separately from task state and can never overwrite a pause or establish completion.
+Concurrent hooks can still issue duplicate reminders. Git or reminder-storage failures preserve
+blocking; Git subprocesses share a bounded budget. The hook never runs tests,
 calls another model, changes policy, installs packages or grants an exception. Cancellation pauses
 reminders without creating PASS. Host hooks and local processes are not an adversarial sandbox;
 CI and repository protection remain the enforcement boundary.

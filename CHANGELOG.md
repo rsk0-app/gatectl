@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.1 — 2026-09-10
+
+- Stop reminders are bounded across separate status turns for an unchanged candidate. Advisories remain explicitly incomplete and include the current next command. New code or explicit enrollment rearms the reminder.
+- Reminder files are separate from task state, so a hook cannot overwrite a user pause or reenrollment. They are never gate evidence.
+- Both staged and working trees, including untracked files, participate in reminder identity. Git and marker-storage failures preserve blocking; Git subprocesses share a bounded budget.
+- CLI and both bundled plugins carry the same fix. Check receipt validation and finish requirements are unchanged.
+
 ## 0.16.0 — 2026-09-07
 
 - Fast local workflow is the new-project default: related tests during edits, one final check pipeline, independent review and explicit finish. Existing policies stay unchanged until owner opt-in.

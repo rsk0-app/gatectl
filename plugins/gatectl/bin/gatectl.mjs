@@ -7,7 +7,7 @@ import fs7 from "node:fs";
 import crypto10 from "node:crypto";
 import path8 from "node:path";
 import { fileURLToPath } from "node:url";
-import os3 from "node:os";
+import os4 from "node:os";
 import { execSync as execSync3, spawnSync as spawnSync3 } from "node:child_process";
 
 // node_modules/js-yaml/dist/js-yaml.mjs
@@ -4703,6 +4703,7 @@ function clientFamily(model) {
 // src/cli/plugin-hook.mjs
 import fs5 from "node:fs";
 import path6 from "node:path";
+import os3 from "node:os";
 import { execFileSync, spawnSync as spawnSync2 } from "node:child_process";
 function hookResponse(input, { root, session, next, cli }) {
   const event = input.hook_event_name;
@@ -4729,7 +4730,7 @@ function runPluginHook(input, cliFile) {
   if (!input || typeof input.cwd !== "string") return {};
   let root;
   try {
-    root = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: input.cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    root = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: input.cwd, encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     return {};
   }
@@ -4746,14 +4747,83 @@ function runPluginHook(input, cliFile) {
     const active = fs5.existsSync(path6.join(root, "docs/specs/ACTIVE")) ? fs5.readFileSync(path6.join(root, "docs/specs/ACTIVE"), "utf8").trim() : null;
     if (active !== session.slug) next = { state: "BLOCKED", why: "the active feature changed since this session enrolled; resume the correct task explicitly" };
     else {
-      const r = spawnSync2(process.execPath, [cliFile, "next", "--json", "--target", root], { encoding: "utf8", timeout: 15e3, maxBuffer: 1024 * 1024 });
+      const r = spawnSync2(process.execPath, [cliFile, "next", "--json", "--target", root], { cwd: root, encoding: "utf8", timeout: 1e4, maxBuffer: 1024 * 1024 });
       try {
         next = r.status === 0 ? JSON.parse(r.stdout) : null;
       } catch {
       }
     }
   }
-  return hookResponse(input, { root, session, next, cli: `node ${JSON.stringify(cliFile)}` });
+  const response = hookResponse(input, { root, session, next, cli: `node ${JSON.stringify(cliFile)}` });
+  if (response.decision !== "block" || !next) return response;
+  let signature;
+  try {
+    signature = reminderSignature(root, session);
+  } catch {
+    return { ...response, reason: `${response.reason} Candidate fingerprint unavailable; duplicate reminder suppression was not applied.` };
+  }
+  try {
+    const latest = readSession(root, input.session_id);
+    if (!latest || latest.paused || latest.slug !== session.slug || latest.at !== session.at) {
+      return { systemMessage: "gatectl session changed during the Stop check; completion is not established. Re-read task state." };
+    }
+    const sessionFile = sessionPath(root, input.session_id);
+    const dir = path6.join(path6.dirname(sessionFile), "reminders");
+    const file = path6.join(dir, path6.basename(sessionFile));
+    let prior = null;
+    try {
+      prior = JSON.parse(fs5.readFileSync(file, "utf8"));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (prior?.signature === signature) {
+      return { systemMessage: `gatectl task remains incomplete: ${next?.why ?? "state could not be evaluated"}. ${next?.next_command ? `Next: ${next.next_command}. ` : ""}A reminder was already issued for this unchanged candidate. Continue authorized work; only finish exit 0 establishes completion.` };
+    }
+    fs5.mkdirSync(dir, { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    try {
+      fs5.writeFileSync(tmp, JSON.stringify({ signature }) + "\n", { mode: 384 });
+      fs5.renameSync(tmp, file);
+    } finally {
+      try {
+        fs5.rmSync(tmp, { force: true });
+      } catch {
+      }
+    }
+  } catch {
+    return { ...response, reason: `${response.reason} Reminder state unavailable; duplicate reminder suppression was not applied.` };
+  }
+  return response;
+}
+function reminderSignature(root, session) {
+  const deadline = Date.now() + 4e3;
+  const dir = fs5.mkdtempSync(path6.join(os3.tmpdir(), "gatectl-reminder-"));
+  const index = path6.join(dir, "index");
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  const git2 = (args2, commandEnv = process.env) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("reminder Git budget exceeded");
+    return execFileSync("git", args2, {
+      cwd: root,
+      env: commandEnv,
+      timeout: remaining,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"]
+    }).trim();
+  };
+  try {
+    const actualIndex = path6.resolve(root, git2(["rev-parse", "--git-path", "index"]));
+    if (fs5.existsSync(actualIndex)) fs5.copyFileSync(actualIndex, index);
+    else git2(["read-tree", "HEAD"], env);
+    const staged = git2(["write-tree"], env);
+    git2(["read-tree", "HEAD"], env);
+    git2(["add", "-A"], env);
+    const working = git2(["write-tree"], env);
+    return JSON.stringify([session.slug, session.at, staged, working]);
+  } finally {
+    fs5.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // src/core/check-cache.mjs
@@ -5636,7 +5706,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     const testGlobs = target.policy.test_paths ?? ["test/**", "e2e/**", "**/*.test.*", "**/*.spec.*"];
     const tp = testPatch({ changed, obligationFiles, testGlobs, matches: matchesAny });
     const ip = implementationPatch({ changed, obligationFiles, testGlobs, matches: matchesAny });
-    const work = fs7.mkdtempSync(path8.join(os3.tmpdir(), "rda-red-"));
+    const work = fs7.mkdtempSync(path8.join(os4.tmpdir(), "rda-red-"));
     const dir = path8.join(work, "tree");
     try {
       execSync3(`git worktree add -q --detach ${dir} ${baseSha}`, { cwd: root, stdio: "pipe" });
@@ -6470,7 +6540,7 @@ ${result.errors.map((x) => `    ${x}`).join("\n")}`);
       console.log(`verify ${sha.slice(0, 12)}: no claim to check \u2014 re-running this commit's gates directly`);
     }
     if (!wantRerun) return 0;
-    const work = fs7.mkdtempSync(path8.join(os3.tmpdir(), "rda-verify-"));
+    const work = fs7.mkdtempSync(path8.join(os4.tmpdir(), "rda-verify-"));
     const dir = path8.join(work, "tree");
     try {
       execSync3(`git worktree add -q --detach ${dir} ${sha}`, { cwd: root, stdio: "pipe" });

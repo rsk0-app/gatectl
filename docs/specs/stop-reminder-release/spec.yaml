@@ -1,0 +1,42 @@
+id: stop-reminder-release
+state: DRAFT
+mvp_ref: gate-decides
+intent: |
+  Release gatectl 0.16.1 with bounded Stop reminders across separate status turns.
+  Persist reminder identity per enrolled session and candidate; never treat a
+  suppressed reminder as a passed gate. Ship source CLI and both bundled plugins.
+invariants:
+  - id: INV-01
+    statement: Gate requirements, gate receipts and finish validation are unchanged. A reminder is never completion evidence.
+  - id: INV-02
+    statement: Code changes including unstaged edits and explicit enrollment rearm reminders; different sessions remain independent.
+  - id: INV-03
+    statement: Git fingerprint failure preserves original blocking behavior. Reminder-storage errors preserve the original blocking response; hook never writes task session state.
+acceptance_criteria:
+  - id: AC-01
+    statement: Separate Stop calls for an unchanged candidate issue one blocking reminder; later calls remain explicitly incomplete, changes rearm, and only actual finish passes completion.
+    test:
+      file: test/plugin-reminders.test.mjs
+      selector: bounds repeated status turns without accepting incomplete work
+      expected_red: assertion
+  - id: AC-02
+    statement: Hook persists reminders separately from task state and never changes enrollment or pause fields; storage failure cannot suppress a first blocking reminder.
+    test:
+      file: test/plugin-reminders.test.mjs
+      selector: keeps reminder persistence separate from task state
+      expected_red: assertion
+allowed_paths:
+  - src/cli/plugin-hook.mjs
+  - test/plugin-reminders.test.mjs
+  - test/plugin.test.mjs
+  - package.json
+  - package-lock.json
+  - plugins/gatectl/**
+  - .claude-plugin/marketplace.json
+  - README.md
+  - CHANGELOG.md
+  - docs/specs/stop-reminder-release/**
+rollback:
+  strategy: Restore v0.16.0; preserve ledger and session state. Separate reminder files are ignored by older runtime.
+  notes: Parallel hooks may issue duplicate reminders; reminder writes never overwrite enrollment or pause state and cannot create gate PASS. Fix does not make execution environments equivalent or reuse invalid check receipts. Hook next subprocess is limited to 10 seconds, Git candidate collection shares a 4-second budget; failure preserves blocking.
+blocking_questions: []

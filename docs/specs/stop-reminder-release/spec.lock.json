@@ -1,0 +1,23 @@
+[
+  {
+    "version": 1,
+    "digest": "a238347ade73181faa8bd87e3aaeaa21b3de9166534b8c91624eb5fb8c0ef9f3",
+    "at": "2026-09-09T23:31:32.419Z",
+    "tier": "A",
+    "requiredTests": [
+      "test/plugin-reminders.test.mjs"
+    ],
+    "allowedPaths": [
+      "src/cli/plugin-hook.mjs",
+      "test/plugin-reminders.test.mjs",
+      "test/plugin.test.mjs",
+      "package.json",
+      "package-lock.json",
+      "plugins/gatectl/**",
+      ".claude-plugin/marketplace.json",
+      "README.md",
+      "CHANGELOG.md",
+      "docs/specs/stop-reminder-release/**"
+    ]
+  }
+]
