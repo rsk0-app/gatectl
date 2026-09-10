@@ -1,0 +1,19 @@
+[
+  {
+    "version": 1,
+    "digest": "561618eb8937bce3d55b6f11fb12b55663adf6f47931c605e3f7cc21edaa6a54",
+    "at": "2026-09-10T06:55:32.682Z",
+    "tier": "A",
+    "requiredTests": [
+      "test/execution-context.test.mjs"
+    ],
+    "allowedPaths": [
+      "src/core/check-cache.mjs",
+      "test/execution-context.test.mjs",
+      "plugins/gatectl/**",
+      "package.json",
+      "package-lock.json",
+      "docs/specs/execution-context-walk/**"
+    ]
+  }
+]

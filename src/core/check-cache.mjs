@@ -8,14 +8,30 @@ import { canonical, signAttestation, verifySignature } from './attest.mjs'
 const hash = value => crypto.createHash('sha256').update(canonical(value)).digest('hex')
 export function executionContext(root, policy, env = process.env) {
   const deps = [], seen = new Set()
-  function walk(file) {
-    if (!fs.existsSync(file)) return
-    const real = fs.realpathSync(file)
+  function walk(file, resolved) {
+    // Resolve configured roots and symlinks only. An ordinary child's canonical
+    // path is its resolved parent's path plus its name; resolving all ancestors
+    // again for every file makes large dependency trees exceed the hook budget.
+    let real, s
+    if (resolved === undefined) {
+      if (!fs.existsSync(file)) return
+      real = fs.realpathSync(file)
+      s = fs.statSync(real)
+    } else {
+      try { s = fs.lstatSync(resolved) }
+      catch { return } // Like legacy existsSync: inaccessible/missing entries are omitted.
+      real = resolved
+      if (s.isSymbolicLink()) {
+        if (!fs.existsSync(resolved)) return
+        real = fs.realpathSync(resolved)
+        s = fs.statSync(real)
+      }
+    }
     if (seen.has(real)) return
     seen.add(real)
-    const s = fs.statSync(real)
     deps.push([file, real, s.size, s.mtimeMs, s.ctimeMs, s.mode])
-    if (s.isDirectory()) for (const name of fs.readdirSync(real).sort()) walk(path.join(file, name))
+    if (s.isDirectory()) for (const name of fs.readdirSync(real).sort())
+      walk(path.join(file, name), path.join(real, name))
   }
   for (const dir of policy.workflow?.dependency_paths ?? ['node_modules', '.venv']) walk(path.resolve(root, dir))
   for (const file of policy.workflow?.input_paths ?? ['.env', '.env.local', '.env.test', '.env.test.local', '.env.production', '.env.production.local']) walk(path.resolve(root, file))

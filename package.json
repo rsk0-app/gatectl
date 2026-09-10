@@ -1,6 +1,6 @@
 {
   "name": "gatectl",
-  "version": "0.16.1",
+  "version": "0.16.1+codex.20260910064758",
   "type": "module",
   "bin": {
     "gatectl": "bin/gatectl.mjs"

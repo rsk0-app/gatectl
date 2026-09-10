@@ -1,0 +1,25 @@
+id: execution-context-walk
+state: DRAFT
+mvp_ref: maintenance
+intent: Remove repeated ancestor resolution from dependency fingerprinting so Stop can evaluate large projects within its existing budget, preserving receipt validity.
+invariants:
+  - id: INV-01
+    statement: Fingerprint inputs, environment coverage, dependency metadata, traversal order, symlink deduplication and gate requirements remain unchanged.
+acceptance_criteria:
+  - id: AC-01
+    statement: Ordinary dependency files do not each resolve their ancestors; the fingerprint remains identical to the previous walker including aliases, cycles and missing paths.
+    test:
+      file: test/execution-context.test.mjs
+      selector: avoids per-file realpath while preserving the legacy fingerprint
+      expected_red: assertion
+allowed_paths:
+  - src/core/check-cache.mjs
+  - test/execution-context.test.mjs
+  - plugins/gatectl/**
+  - package.json
+  - package-lock.json
+  - docs/specs/execution-context-walk/**
+rollback:
+  strategy: Revert walker and regenerate bundled CLI; receipts remain compatible.
+  notes: Keep existing hook timeouts and fail-closed behavior. Do not remove environment keys or cache dependency scans.
+blocking_questions: []

@@ -4833,14 +4833,30 @@ import crypto9 from "node:crypto";
 var hash = (value) => crypto9.createHash("sha256").update(canonical(value)).digest("hex");
 function executionContext(root, policy, env = process.env) {
   const deps = [], seen = /* @__PURE__ */ new Set();
-  function walk(file) {
-    if (!fs6.existsSync(file)) return;
-    const real = fs6.realpathSync(file);
+  function walk(file, resolved) {
+    let real, s;
+    if (resolved === void 0) {
+      if (!fs6.existsSync(file)) return;
+      real = fs6.realpathSync(file);
+      s = fs6.statSync(real);
+    } else {
+      try {
+        s = fs6.lstatSync(resolved);
+      } catch {
+        return;
+      }
+      real = resolved;
+      if (s.isSymbolicLink()) {
+        if (!fs6.existsSync(resolved)) return;
+        real = fs6.realpathSync(resolved);
+        s = fs6.statSync(real);
+      }
+    }
     if (seen.has(real)) return;
     seen.add(real);
-    const s = fs6.statSync(real);
     deps.push([file, real, s.size, s.mtimeMs, s.ctimeMs, s.mode]);
-    if (s.isDirectory()) for (const name of fs6.readdirSync(real).sort()) walk(path7.join(file, name));
+    if (s.isDirectory()) for (const name of fs6.readdirSync(real).sort())
+      walk(path7.join(file, name), path7.join(real, name));
   }
   for (const dir of policy.workflow?.dependency_paths ?? ["node_modules", ".venv"]) walk(path7.resolve(root, dir));
   for (const file of policy.workflow?.input_paths ?? [".env", ".env.local", ".env.test", ".env.test.local", ".env.production", ".env.production.local"]) walk(path7.resolve(root, file));
