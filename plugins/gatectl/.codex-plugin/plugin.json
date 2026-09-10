@@ -1,6 +1,6 @@
 {
   "name": "gatectl",
-  "version": "0.16.1+codex.20260910064758",
+  "version": "0.16.2",
   "description": "Run repository tasks through policy gates, replayable tests and explicit completion.",
   "author": {
     "name": "RSK0"

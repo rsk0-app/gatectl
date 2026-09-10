@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.2 — 2026-09-10
+
+- Dependency fingerprints resolve configured roots and symlinks once, carrying resolved parent paths into ordinary children. This reduces repeated filesystem work in large projects without changing receipt inputs.
+- Preserve target metadata, alias/cycle deduplication and omission of inaccessible or missing entries. Regression tests compare the previous fingerprint algorithm and prevent per-file/per-directory ancestor resolution.
+- On the rsk0 development tree, the same dependency fingerprint took 1.09 seconds instead of 4.58 seconds; Stop completed within its existing timeout. Timings depend on the machine and project.
+- Hook timeouts, environment coverage and completion requirements are unchanged. CLI, both plugin manifests and marketplace versions are aligned.
+
 ## 0.16.1 — 2026-09-10
 
 - Stop reminders are bounded across separate status turns for an unchanged candidate. Advisories remain explicitly incomplete and include the current next command. New code or explicit enrollment rearms the reminder.
