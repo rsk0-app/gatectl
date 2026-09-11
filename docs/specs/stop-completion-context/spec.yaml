@@ -1,0 +1,32 @@
+id: stop-completion-context
+state: DRAFT
+mvp_ref: maintenance
+intent: Stop recognizes a signed accepted completion for unchanged code and file inputs across host invocation environments, without reusing checks or granting finish in a different execution environment. Release metadata and publication follow in a separate release spec.
+invariants:
+  - id: INV-01
+    statement: Check cache, ready-to-commit and finish retain full execution-environment binding. Recorded completion never authorizes a new check or a new finish.
+  - id: INV-02
+    statement: Hook recognition requires matching authenticated completion and latest ledger entry being Complete PASS with an exact completion MAC binding, attestation, spec, policy, tree and dependency/input/runtime fingerprint. Missing or stale evidence falls back to normal evaluation; working/index drift refuses.
+acceptance_criteria:
+  - id: AC-01
+    statement: A real bundled CLI check, ready, finish, commit followed by Stop with changed host environment recognizes prior completion; normal next explicitly asks for checks rather than implementation, and changed environment still prevents a new finish and never reuses a check receipt.
+    test:
+      file: test/plugin-reminders.test.mjs
+      selector: recognizes recorded completion across hook environments without granting new finish
+      expected_red: assertion
+  - id: AC-02
+    statement: Changed file inputs, code, spec, policy, corrupted completion or missing input binding cannot be recognized as recorded completion; only unchanged authenticated evidence passes.
+    test:
+      file: test/plugin-reminders.test.mjs
+      selector: refuses stale or unauthenticated recorded completion
+      expected_red: assertion
+allowed_paths:
+  - src/cli/commands.mjs
+  - src/cli/plugin-hook.mjs
+  - test/plugin-reminders.test.mjs
+  - plugins/gatectl/bin/gatectl.mjs
+  - README.md
+  - docs/specs/stop-completion-context/**
+rollback:
+  strategy: Install 0.16.2. New optional completion field is ignored by old CLI; old receipts require a successful finish under their original environment before gaining the new binding. No policy changes or unsigned completion import.
+blocking_questions: []

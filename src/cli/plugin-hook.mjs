@@ -44,7 +44,7 @@ export function runPluginHook(input, cliFile) {
     const active = fs.existsSync(path.join(root, 'docs/specs/ACTIVE')) ? fs.readFileSync(path.join(root, 'docs/specs/ACTIVE'), 'utf8').trim() : null
     if (active !== session.slug) next = { state: 'BLOCKED', why: 'the active feature changed since this session enrolled; resume the correct task explicitly' }
     else {
-      const r = spawnSync(process.execPath, [cliFile, 'next', '--json', '--target', root], { cwd: root, encoding: 'utf8', timeout: 10000, maxBuffer: 1024 * 1024 })
+      const r = spawnSync(process.execPath, [cliFile, 'next', '--recorded-completion', '--json', '--target', root], { cwd: root, encoding: 'utf8', timeout: 10000, maxBuffer: 1024 * 1024 })
       try { next = r.status === 0 ? JSON.parse(r.stdout) : null } catch { /* no answer is not approval */ }
     }
   }

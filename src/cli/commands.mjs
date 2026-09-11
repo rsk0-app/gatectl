@@ -216,6 +216,32 @@ function currentResults(root, policy, entries) {
     ? { ...e, status: "STALE_ENVIRONMENT" } : e)
 }
 
+// Stop asks whether this unchanged task WAS accepted, not whether commands may
+// run under the host process's environment. This receipt never feeds gateC or
+// cachedRunner: new checks/finish retain the full execution-context contract.
+function recordedCompletion(root, target, f, authority, ledger) {
+  if (!authority.ok || !ledger.ok || f.spec.blockingQuestions?.length || indexDrift(root).length) return null
+  const last = ledger.entries.at(-1)
+  if (last?.gate !== "Complete" || last.status !== "PASS") return null
+  try {
+    const attPath = attestationFile(root, f.slug)
+    const completion = JSON.parse(fs.readFileSync(path.join(path.dirname(attPath), "completion.json"), "utf8"))
+    const att = JSON.parse(fs.readFileSync(attPath, "utf8"))
+    if (!verifySignature(completion, authority.key) || !verifySignature(att, authority.key)) return null
+    const tree = treeDigest(root), policy = policyDigest(root)
+    if (completion.decision !== "ACCEPT" || completion.feature !== f.slug ||
+        completion.tree !== tree || completion.spec_digest !== f.digest || completion.policy_digest !== policy ||
+        last.tree !== tree || last.digest !== f.digest || last.completion_mac !== completion.mac ||
+        att.tree !== tree || att.spec_digest !== f.digest || att.policy_digest !== policy ||
+        completion.attestation_mac !== att.mac || typeof completion.input_context !== "string") return null
+    if (completion.input_context !== executionContext(fs.realpathSync(root), target.policy, {})) return null
+    if (indexDrift(root).length || treeDigest(root) !== tree) return null
+    return { state: "COMPLETED", next_command: null,
+      why: "signed completion accepted this unchanged task in its recorded execution environment; no new check or finish is authorized",
+      allowed_actions: [], blocking_questions: [], completion_basis: "recorded_acceptance" }
+  } catch { return null } // Missing, legacy or corrupt evidence is not acceptance.
+}
+
 function gateCContext(root, target, f, label) {
   // Recomputed from the real diff, not read back from the lock: the lock records the tier the
   // spec was reviewed AT, and the whole point is to catch the diff having outgrown it.
@@ -619,6 +645,10 @@ export const COMMANDS = {
 
     const l = openLedger(root, f.slug, { create: false })
     const ledger = l.ok ? readLedger(l.path, l.key) : { ok: false, entries: [] }
+    if (args.includes("--recorded-completion")) {
+      const accepted = recordedCompletion(root, target, f, l, ledger)
+      if (accepted) return say(accepted)
+    }
     const results = ledger.ok ? currentResults(root, target.policy, ledger.entries) : []
 
     // "Is there an implementation yet" is answered the same way gate R answers it: the half of
@@ -658,7 +688,12 @@ export const COMMANDS = {
       feature: f, spec: f.spec, digest: f.digest,
       tree: treeDigest(root), tests: testsDigest(root, f.spec.requiredTests),
       results, requires, critique: loadFeatureCritique(f),
-      hasImplementation: impl.length > 0, attested, completion, baseHint,
+      // A clean committed tree with stale execution context still has its
+      // implementation. Ask for checks, not another arbitrary code change.
+      hasImplementation: impl.length > 0 || (ledger.ok && ledger.entries.some(e =>
+        ["Green", "Gfast", "Gfull"].includes(e.gate) && e.status === "PASS" &&
+        e.digest === f.digest && e.tree === treeDigest(root))),
+      attested, completion, baseHint,
       critiqueRequired: requires.includes("L") && (target.policy.critic === undefined || (target.policy.critic.required_for_tiers ?? []).includes(tier)),
     })
     const review = loadReview(root, f.slug)
@@ -1174,6 +1209,7 @@ export const COMMANDS = {
     const f = activeFeature(root)
     if (refuseUncompiled(f)) return 2
     if (!f?.spec) { console.error("no active feature"); return 2 }
+    const inputContext = executionContext(fs.realpathSync(root), target.policy, {})
     const ctx = gateCContext(root, target, f, "complete")
     if (ctx.code !== undefined) return ctx.code
 
@@ -1204,8 +1240,13 @@ export const COMMANDS = {
       spec: { ...f.spec, digest: f.digest, tree },
       obligations, red, green, gateC: ctx.result, attestation, requires: ctx.requires,
     })
+    if (inputContext !== executionContext(fs.realpathSync(root), target.policy, {}) || ctx.tree !== treeDigest(root) || indexDrift(root).length) {
+      console.error("completion: NOT_EVALUATED — candidate or file inputs changed during validation")
+      return 2
+    }
     const record0 = signAttestation({
       feature: f.slug, rda_version: VERSION, authority: "deterministic_policy_engine",
+      input_context: inputContext, attestation_mac: attestation.att?.mac ?? null,
       decision: decision.decision, failed_predicates: decision.failed_predicates,
       basis: decision.basis, skipped: decision.skipped,
       spec_digest: f.digest, policy_digest: policyDigest(root), tree: ctx.tree,
@@ -1218,7 +1259,7 @@ export const COMMANDS = {
     fs.mkdirSync(path.dirname(out), { recursive: true })
     fs.writeFileSync(out, JSON.stringify(record0, null, 2) + "\n")
     record(root, f.slug, { gate: "Complete", status: decision.decision === "ACCEPT" ? "PASS" : "FAIL",
-                           digest: f.digest, tree: ctx.tree, at: new Date().toISOString() })
+                           digest: f.digest, tree: ctx.tree, completion_mac: record0.mac, at: new Date().toISOString() })
 
     console.log(`completion: ${decision.decision}`)
     for (const p0 of decision.failed_predicates) console.log(`  - ${p0.predicate}: ${p0.detail}`)

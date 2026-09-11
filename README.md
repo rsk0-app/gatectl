@@ -1049,3 +1049,19 @@ criterion that was red before it, and the suite (`npm test`, 513 tests) includes
 that tries to disarm the gates — deleting a required test, adding `.only`, forging a ledger entry,
 replaying an old green onto a new tree. If you find a way past them, that is the most valuable
 thing you can send.
+
+### Stop and recorded completion
+
+Stop uses `next --recorded-completion --json` to recognize a previously signed
+ACCEPT for the same tree, specification, policy and file/dependency/runtime inputs.
+The completion must bind the current attestation and the final authenticated
+ledger entry; later checks/decisions, code edits or missing/corrupt evidence fall
+back to ordinary evaluation. This permits a host hook with different process env
+to recognize accepted work after commit. It does not reuse checks or authorize a
+new `finish`: those remain bound to the full execution environment.
+
+Pre-0.16.3 completions lack this binding. A successful `finish` under their original
+validated environment can refresh it; never edit or sign old records manually.
+Normal `next` in a stale environment asks for checks instead of claiming a clean,
+previously checked committed tree has no implementation. A later failed finish
+supersedes acceptance; recover through valid checks/finish, not record restoration.

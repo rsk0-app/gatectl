@@ -1,0 +1,19 @@
+[
+  {
+    "version": 1,
+    "digest": "5e741bd4d883a70fcdd0e05c1e35bc37227dd33cdff815c859f518a09a49d0f5",
+    "at": "2026-09-10T18:44:06.753Z",
+    "tier": "A",
+    "requiredTests": [
+      "test/plugin-reminders.test.mjs"
+    ],
+    "allowedPaths": [
+      "src/cli/commands.mjs",
+      "src/cli/plugin-hook.mjs",
+      "test/plugin-reminders.test.mjs",
+      "plugins/gatectl/bin/gatectl.mjs",
+      "README.md",
+      "docs/specs/stop-completion-context/**"
+    ]
+  }
+]

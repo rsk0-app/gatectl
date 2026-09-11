@@ -4747,7 +4747,7 @@ function runPluginHook(input, cliFile) {
     const active = fs5.existsSync(path6.join(root, "docs/specs/ACTIVE")) ? fs5.readFileSync(path6.join(root, "docs/specs/ACTIVE"), "utf8").trim() : null;
     if (active !== session.slug) next = { state: "BLOCKED", why: "the active feature changed since this session enrolled; resume the correct task explicitly" };
     else {
-      const r = spawnSync2(process.execPath, [cliFile, "next", "--json", "--target", root], { cwd: root, encoding: "utf8", timeout: 1e4, maxBuffer: 1024 * 1024 });
+      const r = spawnSync2(process.execPath, [cliFile, "next", "--recorded-completion", "--json", "--target", root], { cwd: root, encoding: "utf8", timeout: 1e4, maxBuffer: 1024 * 1024 });
       try {
         next = r.status === 0 ? JSON.parse(r.stdout) : null;
       } catch {
@@ -5152,6 +5152,31 @@ function currentResults(root, policy, entries) {
   if (!policy.workflow) return entries;
   const context = executionContext(root, policy);
   return entries.map((e) => ["Green", "Gfast", "Gfull"].includes(e.gate) && e.execution_context !== context ? { ...e, status: "STALE_ENVIRONMENT" } : e);
+}
+function recordedCompletion(root, target, f, authority, ledger) {
+  if (!authority.ok || !ledger.ok || f.spec.blockingQuestions?.length || indexDrift(root).length) return null;
+  const last = ledger.entries.at(-1);
+  if (last?.gate !== "Complete" || last.status !== "PASS") return null;
+  try {
+    const attPath = attestationFile(root, f.slug);
+    const completion = JSON.parse(fs7.readFileSync(path8.join(path8.dirname(attPath), "completion.json"), "utf8"));
+    const att = JSON.parse(fs7.readFileSync(attPath, "utf8"));
+    if (!verifySignature(completion, authority.key) || !verifySignature(att, authority.key)) return null;
+    const tree = treeDigest(root), policy = policyDigest(root);
+    if (completion.decision !== "ACCEPT" || completion.feature !== f.slug || completion.tree !== tree || completion.spec_digest !== f.digest || completion.policy_digest !== policy || last.tree !== tree || last.digest !== f.digest || last.completion_mac !== completion.mac || att.tree !== tree || att.spec_digest !== f.digest || att.policy_digest !== policy || completion.attestation_mac !== att.mac || typeof completion.input_context !== "string") return null;
+    if (completion.input_context !== executionContext(fs7.realpathSync(root), target.policy, {})) return null;
+    if (indexDrift(root).length || treeDigest(root) !== tree) return null;
+    return {
+      state: "COMPLETED",
+      next_command: null,
+      why: "signed completion accepted this unchanged task in its recorded execution environment; no new check or finish is authorized",
+      allowed_actions: [],
+      blocking_questions: [],
+      completion_basis: "recorded_acceptance"
+    };
+  } catch {
+    return null;
+  }
 }
 function gateCContext(root, target, f, label) {
   const tier = featureTier(f, root, target.policy, changedPaths(root));
@@ -5589,6 +5614,10 @@ var COMMANDS = {
     }
     const l = openLedger(root, f.slug, { create: false });
     const ledger = l.ok ? readLedger(l.path, l.key) : { ok: false, entries: [] };
+    if (args2.includes("--recorded-completion")) {
+      const accepted = recordedCompletion(root, target, f, l, ledger);
+      if (accepted) return say(accepted);
+    }
     const results = ledger.ok ? currentResults(root, target.policy, ledger.entries) : [];
     const testGlobs = target.policy.test_paths ?? ["test/**", "e2e/**", "**/*.test.*", "**/*.spec.*"];
     const changed = changedPaths(root);
@@ -5629,7 +5658,9 @@ var COMMANDS = {
       results,
       requires,
       critique: loadFeatureCritique(f),
-      hasImplementation: impl.length > 0,
+      // A clean committed tree with stale execution context still has its
+      // implementation. Ask for checks, not another arbitrary code change.
+      hasImplementation: impl.length > 0 || ledger.ok && ledger.entries.some((e) => ["Green", "Gfast", "Gfull"].includes(e.gate) && e.status === "PASS" && e.digest === f.digest && e.tree === treeDigest(root)),
       attested,
       completion,
       baseHint,
@@ -6267,6 +6298,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       console.error("no active feature");
       return 2;
     }
+    const inputContext = executionContext(fs7.realpathSync(root), target.policy, {});
     const ctx = gateCContext(root, target, f, "complete");
     if (ctx.code !== void 0) return ctx.code;
     const tree = ctx.tree;
@@ -6293,10 +6325,16 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       attestation,
       requires: ctx.requires
     });
+    if (inputContext !== executionContext(fs7.realpathSync(root), target.policy, {}) || ctx.tree !== treeDigest(root) || indexDrift(root).length) {
+      console.error("completion: NOT_EVALUATED \u2014 candidate or file inputs changed during validation");
+      return 2;
+    }
     const record0 = signAttestation({
       feature: f.slug,
       rda_version: VERSION,
       authority: "deterministic_policy_engine",
+      input_context: inputContext,
+      attestation_mac: attestation.att?.mac ?? null,
       decision: decision.decision,
       failed_predicates: decision.failed_predicates,
       basis: decision.basis,
@@ -6325,6 +6363,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       status: decision.decision === "ACCEPT" ? "PASS" : "FAIL",
       digest: f.digest,
       tree: ctx.tree,
+      completion_mac: record0.mac,
       at: (/* @__PURE__ */ new Date()).toISOString()
     });
     console.log(`completion: ${decision.decision}`);
