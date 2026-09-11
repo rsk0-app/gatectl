@@ -6,6 +6,7 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const read = file => JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'))
 test('keeps every distributed version aligned', () => {
   const version = read('package.json').version
+  expect(version).toBe('0.16.3')
   expect(version).toMatch(/^\d+\.\d+\.\d+$/)
   const heading = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8').match(/^## (\S+) — (\d{4}-\d{2}-\d{2})$/m)
   expect(heading?.[1]).toBe(version)

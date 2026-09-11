@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.3 — 2026-09-11
+
+- Stop recognizes signed accepted completion after commit across host invocation environments, while binding the same tree, specification, policy and file/dependency/runtime inputs. Later failed decisions or invalid evidence remain blocking.
+- New checks, cache reuse and finish retain full execution-environment binding. Hook timeouts and repository policies are unchanged.
+- Normal next asks for checks when execution evidence is stale instead of claiming a previously checked committed tree has no implementation. Recorded file-input paths normalize filesystem aliases.
+- Older accepted tasks can gain the new receipt binding by running finish in their original validated environment. No manual record edits or policy downgrade are required.
+- CLI and both plugins are aligned at 0.16.3. An external rsk0 probe of the accepted runtime returned an empty Stop response in 1.782 seconds; the record is retained outside this repository and is not a universal timing guarantee.
+
 ## 0.16.2 — 2026-09-10
 
 - Dependency fingerprints resolve configured roots and symlinks once, carrying resolved parent paths into ordinary children. This reduces repeated filesystem work in large projects without changing receipt inputs.

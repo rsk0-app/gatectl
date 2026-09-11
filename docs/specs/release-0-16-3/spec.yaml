@@ -1,0 +1,28 @@
+id: release-0-16-3
+state: DRAFT
+mvp_ref: maintenance
+intent: Prepare stable gatectl 0.16.3 distribution metadata for publication of the accepted recorded-completion Stop fix. Publication is a post-finish operation verified separately.
+invariants:
+  - id: INV-01
+    statement: Runtime behavior and policy remain unchanged from accepted commit 6da2cf1; only distribution metadata, release notes and version consistency verification change.
+acceptance_criteria:
+  - id: AC-01
+    statement: CLI, lockfile, bundled package, both plugin manifests and Claude marketplace identify the same bare-semver release version, 0.16.3 for this release, matching the first dated changelog entry.
+    test:
+      file: test/release-version.test.mjs
+      selector: keeps every distributed version aligned
+      expected_red: assertion
+allowed_paths:
+  - package.json
+  - package-lock.json
+  - plugins/gatectl/package.json
+  - plugins/gatectl/.codex-plugin/plugin.json
+  - plugins/gatectl/.claude-plugin/plugin.json
+  - .claude-plugin/marketplace.json
+  - CHANGELOG.md
+  - test/release-version.test.mjs
+  - docs/specs/release-0-16-3/**
+rollback:
+  strategy: Install published 0.16.2; retain the immutable 0.16.3 tag and release history.
+  notes: Publish only after local gates pass; verify CI and uploaded asset checksums. No npm registry publication is claimed.
+blocking_questions: []
