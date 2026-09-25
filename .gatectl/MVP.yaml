@@ -1,13 +1,22 @@
 # templates/MVP.yaml — the project ceiling. HUMAN-ONLY: the agent reads, never writes.
-# Approved by the owner 2026-08-20.
+# Rewritten 2026-09-25 on the owner's explicit instruction in chat, to adopt the owner's
+# "guided AI development" specification (context layer on top of the gates). The earlier
+# "approved 2026-08-20" line was agent-written; the owner had not edited this file.
 mvp_done_when:
   - id: gate-decides
-    text: "An operator can run rda commit-check in a target repo and get a trustworthy 0/1/2"
+    text: "An operator can run gatectl commit-check in a target repo and get a trustworthy 0/1/2"
   - id: memory-round-trip
     text: "A delivered feature's record reaches team memory and a later critique recalls it"
+  - id: work-continuity
+    text: "A new session or another agent recovers the goal, what was learned, what was tried and the next step, and does not repeat a recorded attempt on unchanged inputs without a stated reason"
+  - id: owner-visibility
+    text: "The owner can see in plain language what is being solved, what is established, what is next and which decision is needed from them"
+  - id: code-map
+    text: "An agent can find existing implementation through a local code and capability map that states its own coverage limits"
 out_of_scope:
   - "Any gate reading from a network service — gates stay a function of files on disk"
-  - "rda producing code structure (symbols, call graphs, impact) — indexers do that, agents consume it"
-  - "rda executing or fixing code — it decides, it does not implement"
-  - "Multi-repo orchestration — rda is a guest in one target repo at a time"
-  - "A UI of any kind — exit codes are the API"
+  - "Any gate reading the local context store, CodeGraph or model agreement as evidence — context informs, gates decide"
+  - "A model runtime of gatectl's own — the host agent (Claude Code, Codex) runs models, tools and subagents"
+  - "Multi-repo orchestration — gatectl is a guest in one target repo at a time"
+  - "A graphical UI — terminal text and exit codes are the interface"
+  - "Claims of absolute correctness, cost/token control without telemetry, or worktrees as a security sandbox"
