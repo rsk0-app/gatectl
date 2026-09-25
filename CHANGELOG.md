@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `gatectl work`: per-worktree work store (questions, attempts, conclusions, checkpoints) and `work brief`, so a new session recovers the goal, findings, interrupted work, decisions needed and the next action. SessionStart injects a bounded brief.
+- Loop guard: a repeated hypothesis or action on unchanged input fingerprints, a new attempt beside an unresolved one, or an attempt past three without progress is refused unless a reason is recorded.
+- Conclusions carry input fingerprints and report `current`, `stale` or `unknown` freshness; model conclusions default to `hypothesis`.
+- Uses built-in `node:sqlite` (Node >= 22.13, or 22.5+ via automatic flag). Damaged or newer stores are refused and left untouched; export/import round-trips. Gates never read the store and all other commands still run on Node 20.
+- New `context` skill. The repository's own policy now has Claude Code implement and the Codex CLI critique and review.
+
 ## 0.16.3 — 2026-09-11
 
 - Stop recognizes signed accepted completion after commit across host invocation environments, while binding the same tree, specification, policy and file/dependency/runtime inputs. Later failed decisions or invalid evidence remain blocking.

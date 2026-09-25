@@ -1,0 +1,121 @@
+# docs/specs/work-state-brief/spec.yaml — the source of truth. `gatectl spec compile` is what the gates read.
+id: work-state-brief
+state: DRAFT
+mvp_ref: work-continuity
+
+intent: |
+  First working increment of the owner's context-layer specification (stages 2 and 5 of its
+  order, reduced to the smallest useful result). A local per-worktree SQLite work store records
+  questions, attempts, conclusions and checkpoints, each tagged with a work id (the active spec
+  slug unless --work is given). `gatectl work brief` restores, for the current work: goal,
+  next action, decisions needed from the owner, interrupted attempts, exhausted questions,
+  conclusions with provenance and freshness, and open questions. A repeated attempt on
+  unchanged inputs requires a stated reason. SessionStart injects a compact, bounded brief.
+  Not in this stage: owner-goal interview, capability/architecture maps, code index, model pair
+  protocol, task graph. Gates never read the work store.
+
+  Definitions used by the criteria:
+  - Inputs: `--input <path>` (repeatable) is resolved against the worktree root; a path whose
+    real location is outside the root (including through a symlink) is refused, and a directory
+    is refused as an input (name files). Fingerprint per input = sha256 of content, or the
+    markers `absent` / `unreadable`. An attempt without inputs is fingerprinted by the whole
+    working-tree digest. A conclusion is `current` only when every input is readable now and
+    matches; any `unreadable` input, now or when recorded, makes freshness `unknown`; a
+    conclusion without inputs has freshness `unknown`, never `current`.
+  - Repeat: same question and same hypothesis or same action, compared exactly after trimming
+    and collapsing whitespace only (case and punctuation are significant, so `rg UserID` and
+    `rg userid` differ), and same input fingerprints as an earlier attempt.
+  - Budget: 3 attempts with outcome `no_progress` on a question since its last `progress`
+    result. `progress` resets the count; `--reason` permits one more attempt, is recorded, and
+    is not progress.
+  - Store: the database file plus any existing `-wal`/`-shm` companions under
+    `<state>/worktrees/<hash of worktree root>/work.db`.
+
+invariants:
+  - id: INV-01
+    statement: No gate, next, status, commit-check, finish or Stop hook path reads the work store, directly, transitively or through a child process; work records never establish PASS, DONE or completion.
+  - id: INV-02
+    statement: An existing store is validated read-only (header, integrity, schema version) before any write, migration or checkpoint; an unreadable, truncated or newer-schema store is refused with a named error and its files are left in place and byte-identical; a new empty store is never silently created in its place.
+  - id: INV-03
+    statement: Each worktree has its own store. Attempt and conclusion history is append-only except recording the result of a planned attempt exactly once; duplicate check plus insert, and result recording, are each one IMMEDIATE transaction.
+  - id: INV-04
+    statement: The SessionStart hook reads the store in a child process with a 3 s timeout and a 2000-character limit, prioritised goal, next action, decisions, interrupted, exhausted, stale, open, conclusions, with an explicit truncation marker; any failure adds one "work state unavailable" line and keeps the existing gatectl context.
+  - id: INV-05
+    statement: node:sqlite is loaded lazily only inside `work` operations; every other command and hook event behaves as before on a runtime without node:sqlite; `work` there exits 2 with SQLITE_UNAVAILABLE. On Node 22.5 to 23.3 the CLI re-executes `work` with --experimental-sqlite.
+  - id: INV-06
+    statement: Import accepts only a versioned export format into an empty store, validates every record and reference before writing, and applies it in one transaction; any error leaves the target store unchanged.
+
+acceptance_criteria:
+  - id: AC-01
+    statement: Given recorded question, attempt with result, conclusion and checkpoint for the current work, when a new process runs `work brief --json` and the SessionStart hook fires, then both return the goal, established conclusions with provenance, open questions and the next action; records of another work id are not mixed into the current goal or next action.
+    test:
+      file: test/work-state.test.mjs
+      selector: a new session recovers goal, findings and next action
+      expected_red: assertion
+  - id: AC-02
+    statement: Given an attempt on a question, when the same hypothesis or action is tried again on unchanged inputs, then `work try` exits 1 naming the prior attempt (an action differing only in case is not a repeat); with changed inputs or --reason it is recorded with the reason; after 3 no-progress attempts a reason is required, a progress result resets the count, and the brief flags the question as exhausted.
+    test:
+      file: test/work-state.test.mjs
+      selector: refuses a repeated attempt on unchanged inputs without a stated reason
+      expected_red: assertion
+  - id: AC-03
+    statement: Given a conclusion bound to input files, when one of those files changes or is deleted, then the brief marks the conclusion stale for recheck while the stored record keeps its original fingerprint; a conclusion without inputs or with an unreadable input is reported with unknown freshness, never current; an input escaping the worktree through a symlink, or a directory input, is refused.
+    test:
+      file: test/work-state.test.mjs
+      selector: marks a conclusion stale when its input changes
+      expected_red: assertion
+  - id: AC-04
+    statement: Given a planned attempt without a result (interrupted session), then the brief lists it as interrupted, a new attempt on that question needs its result or a reason, and a later process can record the result exactly once.
+    test:
+      file: test/work-state.test.mjs
+      selector: an interrupted attempt is shown and can be completed later exactly once
+      expected_red: assertion
+  - id: AC-05
+    statement: Given a corrupted, zero-length or newer-schema store (including one with a WAL companion), `work` commands exit 2 with STORE_UNREADABLE or STORE_TOO_NEW and every store file stays byte-identical and in place; a second git worktree gets a separate store.
+    test:
+      file: test/work-state.test.mjs
+      selector: refuses a damaged store instead of starting empty
+      expected_red: assertion
+  - id: AC-06
+    statement: No module reachable from the gate, next, completion or hook Stop paths imports the work store, commands.mjs reaches it only through a lazy import inside `work`/brief code, and `next --json` and `status` produce identical output with the store absent, corrupted or populated.
+    test:
+      file: test/work-state.test.mjs
+      selector: gates never read the work store
+      expected_red: assertion
+  - id: AC-07
+    statement: Two processes recording a result for the same planned attempt at the same time yield exactly one accepted result and one ATTEMPT_ALREADY_RESOLVED refusal; two concurrent identical `work try` calls yield exactly one recorded attempt.
+    test:
+      file: test/work-state.test.mjs
+      selector: concurrent writers cannot both win
+      expected_red: assertion
+  - id: AC-08
+    statement: The SessionStart context from a store with many records stays within 2000 characters, keeps goal and next action, and marks truncation; with node:sqlite unavailable or a damaged store the hook still exits 0 with the existing gatectl context plus one unavailable line, other commands still run, and `work` exits 2 with SQLITE_UNAVAILABLE.
+    test:
+      file: test/work-state.test.mjs
+      selector: session start brief stays bounded and never breaks the hook
+      expected_red: assertion
+  - id: AC-09
+    statement: The `work export` then `work import` into an empty store round-trips the records with their ids; an export whose last record references a missing attempt is refused and leaves the target store empty; import into a non-empty store is refused.
+    test:
+      file: test/work-state.test.mjs
+      selector: import is all or nothing
+      expected_red: assertion
+
+allowed_paths:
+  - src/context/**
+  - src/cli/commands.mjs
+  - src/cli/plugin-hook.mjs
+  - test/work-state.test.mjs
+  - plugins/gatectl/bin/gatectl.mjs
+  - plugins/gatectl/skills/**
+  - README.md
+  - CHANGELOG.md
+  - docs/architecture/**
+  - docs/specs/work-state-brief/**
+  - docs/specs/ACTIVE
+
+rollback:
+  strategy: Revert the commit. The work store lives outside the repository under the gatectl state directory and is read only by `work` and the SessionStart hook; removing the code leaves gates, ledgers and policy unchanged. Stores can be exported to JSON before rollback.
+  notes: null
+
+blocking_questions: []

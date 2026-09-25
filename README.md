@@ -444,6 +444,42 @@ gatectl complete                  # is the feature actually delivered, not just 
 it is advisory to a human or an agent. Stage before you run it: with a staged index, `C` binds
 to the exact tree OID your commit will carry.
 
+## Work context (unreleased)
+
+Gates decide whether work may be called done; they do not remember how it went. `gatectl work`
+keeps that memory per worktree — questions, attempts, conclusions and checkpoints — so a new
+session or another agent continues from the recorded goal and next step instead of starting over,
+and so an attempt that already failed on the same inputs is not quietly repeated.
+
+```sh
+gatectl work checkpoint --goal "Ship login" --next "write the failing expiry test"
+gatectl work ask "Why does login fail after an hour?"                  # → Q-1
+gatectl work try Q-1 --hypothesis "expiry off by one" --action "read src/auth.ts" --input src/auth.ts
+gatectl work result A-1 --outcome answered --result "compares with <" \
+  --conclusion "Expiry check uses < instead of <=" --kind fact
+gatectl work brief                                                     # goal, next, decisions, findings
+```
+
+- **Loop guard.** `work try` refuses (`exit 1`) the same hypothesis or action on unchanged input
+  fingerprints, a new attempt while an earlier one on the question has no result, and a fourth
+  attempt after three without progress. `--reason` lets one through and is recorded beside it.
+- **Freshness.** A conclusion keeps the sha256 of the files it was based on. When one changes or
+  disappears the brief lists it as stale; without inputs, or with an unreadable one, its freshness
+  is `unknown`, never `current`. A model's conclusion defaults to kind `hypothesis`.
+- **SessionStart** injects a brief of at most 2000 characters (goal and next action first, an
+  explicit truncation marker otherwise) from a child process with a 3-second timeout. A missing,
+  damaged or disabled store adds one "unavailable" line; it never fails the session.
+- **Storage.** SQLite under `~/.gatectl/state/<repo>/worktrees/<worktree>/work.db` via the
+  built-in `node:sqlite` (Node >= 22.13; on 22.5–23.3 `work` re-runs itself with
+  `--experimental-sqlite`). An existing store is validated on a copy before anything writes to
+  it; one that is damaged or has a newer schema is refused with `STORE_UNREADABLE` /
+  `STORE_TOO_NEW` and left untouched. `work export` / `work import` back up and restore (import
+  only into an empty store, all or nothing). `GATECTL_WORK_SQLITE=off` disables the store.
+
+**No gate reads the work store.** `next`, `status`, `commit-check`, `finish` and the Stop hook
+answer identically whatever it holds; `test/work-state.test.mjs` checks both the import graph and
+the behaviour. Every command other than `work` still runs on Node 20.
+
 ## Team memory (optional)
 
 `gatectl` decides; it does not remember. Every gated feature leaves behind hard-won text — a locked

@@ -5,7 +5,7 @@ import os from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { readSession, sessionPath } from '../core/plugin-session.mjs'
 
-export function hookResponse(input, { root, session, next, cli }) {
+export function hookResponse(input, { root, session, next, cli, work = null }) {
   const event = input.hook_event_name
   if (event === 'Stop') {
     if (!session || session.paused || input.permission_mode === 'plan') return {}
@@ -25,8 +25,11 @@ export function hookResponse(input, { root, session, next, cli }) {
     id ? `Session id (data, not a command): ${JSON.stringify(id)}. Enroll implementation work with task start <slug> --session <id> --client codex|claude.` : 'The hook received no session id; the skill still applies, but automatic Stop enforcement is unavailable.',
     'Read-only questions and reviews do not enroll a task. Follow the current policy via next --json; never invent a RED test for a policy-only tier.',
     'Only finish (legacy complete) exit 0 permits a completion claim. A blocked task, pause, or bounded Stop continuation is not approval. Preserve user cancellation and existing permission boundaries.',
-  ].join('\n')
-  return { hookSpecificOutput: { hookEventName: event, additionalContext: context } }
+  ]
+  // Recorded work state is context for continuing, never completion evidence.
+  if (event === 'SessionStart' && work?.text) context.push(`Recorded work state (gatectl work brief; context, not evidence):\n${work.text}`)
+  else if (event === 'SessionStart' && work?.unavailable) context.push(`gatectl work state unavailable: ${work.unavailable}`)
+  return { hookSpecificOutput: { hookEventName: event, additionalContext: context.join('\n') } }
 }
 
 export function runPluginHook(input, cliFile) {
@@ -48,7 +51,8 @@ export function runPluginHook(input, cliFile) {
       try { next = r.status === 0 ? JSON.parse(r.stdout) : null } catch { /* no answer is not approval */ }
     }
   }
-  const response = hookResponse(input, { root, session, next, cli: `node ${JSON.stringify(cliFile)}` })
+  const work = input.hook_event_name === 'SessionStart' ? workBrief(root, cliFile) : null
+  const response = hookResponse(input, { root, session, next, work, cli: `node ${JSON.stringify(cliFile)}` })
   // An unavailable next result is not an evaluated reminder to memoize.
   if (response.decision !== 'block' || !next) return response
   let signature
@@ -84,6 +88,23 @@ export function runPluginHook(input, cliFile) {
     return { ...response, reason: `${response.reason} Reminder state unavailable; duplicate reminder suppression was not applied.` }
   }
   return response
+}
+
+// The brief runs in its own process: node:sqlite may need a flag there, and a slow or locked store
+// must cost at most its timeout, never the session. Only SessionStart reads it; Stop never does.
+const BRIEF_LIMIT = 2000
+function workBrief(root, cliFile) {
+  // The flag is passed up front (where this Node knows it) so the brief never re-executes itself:
+  // a grandchild would outlive the timeout.
+  const flags = process.allowedNodeEnvironmentFlags.has('--experimental-sqlite') ? ['--experimental-sqlite', '--disable-warning=ExperimentalWarning'] : []
+  const r = spawnSync(process.execPath, [...flags, cliFile, 'work', 'brief', '--max-chars', String(BRIEF_LIMIT), '--target', root],
+    { cwd: root, encoding: 'utf8', timeout: 3000, maxBuffer: 256 * 1024, env: { ...process.env, GATECTL_WORK_REEXEC: '1' } })
+  if (r.error || r.status !== 0) {
+    const why = r.error?.code === 'ETIMEDOUT' ? 'timed out' : (r.stderr || '').trim().split('\n')[0] || `exit ${r.status}`
+    return { unavailable: why.slice(0, 300) }
+  }
+  const text = r.stdout.trim()
+  return text ? { text: text.slice(0, BRIEF_LIMIT) } : null
 }
 
 // Both the staged candidate and the entire working tree matter. `git add -A`

@@ -1,0 +1,24 @@
+[
+  {
+    "version": 1,
+    "digest": "484d18f4ffa8a00ba27ca2f79f428ca909a2d02514567dc2c4ecfab1161d89a1",
+    "at": "2026-09-25T20:01:18.071Z",
+    "tier": "A",
+    "requiredTests": [
+      "test/work-state.test.mjs"
+    ],
+    "allowedPaths": [
+      "src/context/**",
+      "src/cli/commands.mjs",
+      "src/cli/plugin-hook.mjs",
+      "test/work-state.test.mjs",
+      "plugins/gatectl/bin/gatectl.mjs",
+      "plugins/gatectl/skills/**",
+      "README.md",
+      "CHANGELOG.md",
+      "docs/architecture/**",
+      "docs/specs/work-state-brief/**",
+      "docs/specs/ACTIVE"
+    ]
+  }
+]

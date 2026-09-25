@@ -57,6 +57,10 @@ gate, mandatory document, approval round or model call. For a small edit, keep i
   authorized step or report the specific external dependency that prevents it. Explain progress
   through the goal, confirmed result and next action, rather than repeated activity reports.
 
+For work that spans sessions or has unknowns, keep questions, attempts, conclusions and the next
+step with the `context` skill (`gatectl work`); read `work brief` when resuming. It is context, not
+evidence.
+
 These are planning responsibilities of the implementing agent. Gate exit codes prove their
 declared checks; they do not mechanically guarantee that the chosen scope was useful or that
 an external source is complete.

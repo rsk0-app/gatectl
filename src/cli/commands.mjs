@@ -466,6 +466,12 @@ export const COMMANDS = {
   async "ready-to-commit"(args) { return COMMANDS["commit-check"](args) },
   async finish(args) { return COMMANDS.complete(args) },
   async version() { console.log(VERSION); return 0 },
+  // The work store is context for agents, never gate evidence. Imported lazily so that node:sqlite
+  // is loaded only here, and no gate path can reach it.
+  async work(args) {
+    const { runWork } = await import("../context/cli.mjs")
+    return runWork(args, targetRoot(args))
+  },
   async hook() {
     const raw = fs.readFileSync(0, "utf8")
     if (raw.length > 1024 * 1024) { console.error("hook input is too large"); return 2 }
