@@ -32,6 +32,35 @@ and policy. For a tier without R, `verification: policy` allows criteria without
 then claims the declared policy gates passed, not per-criterion RED/GREEN proof. Never use that
 mode to evade a higher tier: if scope escalates to a tier requiring R, add the missing tests.
 
+## Plan a useful outcome before implementation
+
+Use the existing task/spec to keep planning and delivery in one process. This guidance adds no
+gate, mandatory document, approval round or model call. For a small edit, keep it brief.
+
+- Recover the owner's agreed goal, ordering and already verified progress. Do not restart an
+  audit on every continuation or quietly substitute a narrower goal. Define the observable
+  result and what will prove it; completing an adapter alone does not complete its product path.
+- Choose a coherent, reviewable stage with a useful result. Group tightly related code, tests,
+  consumer wiring and documentation when they belong to that result. Split on actual dependencies
+  or risk, not for progress reports; do not turn the whole MVP into one unreviewable change.
+- Identify assumptions that could invalidate the approach: actual source shape, access, version
+  semantics, existence of a required mechanism, or an owner decision. Check the important ones
+  cheaply and early using read-only real data, existing code, primary sources or a bounded probe.
+  Do not expand this into a universal audit. A parser rejecting data is not proof the provider
+  is broken; resolve relevant documentation/implementation differences before assigning blame.
+- Separate technical unknowns from missing owner decisions. Reuse earlier authorization and
+  decisions. For a genuinely missing decision, prepare a concrete option and its consequences,
+  ask before dependent work, and continue authorized independent work. Never invent an approval,
+  infer consent from elapsed time, or repeatedly ask permission for work already authorized.
+- Record remaining dependencies and the completion boundary in the existing spec. Passing gates
+  for a limited stage does not close the original goal. After acceptance, continue the next
+  authorized step or report the specific external dependency that prevents it. Explain progress
+  through the goal, confirmed result and next action, rather than repeated activity reports.
+
+These are planning responsibilities of the implementing agent. Gate exit codes prove their
+declared checks; they do not mechanically guarantee that the chosen scope was useful or that
+an external source is complete.
+
 ## Fast workflow (default for new repositories)
 
 New setup uses `init --mode fast --client codex|claude`. Existing repositories keep their policy.
@@ -41,6 +70,13 @@ review and commit that policy change separately. Never downgrade requirements to
 For fast tasks, write a concise spec with `verification: policy`, intent, scope, criteria and rollback.
 Implement a complete, reviewable stage. During implementation use ONLY `check-related` for changed
 code; do not run `test-green`, full checks or a model review after every edit.
+
+Before the final gates, ensure the chosen stage is actually ready: intended implementation,
+necessary tests (including validity of new test code), available real-source checks, documentation
+and intended diff. If known required edits remain, finish them first. Keep using the checks allowed
+by the current workflow; this is not permission to bypass a required early gate or run duplicate
+full suites. While a long check runs, preserve its candidate tree and do useful independent work.
+Investigate unusually long delays before retrying; do not launch duplicate checks blindly.
 
 At the end of the stage:
 

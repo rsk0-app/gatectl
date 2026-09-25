@@ -1,0 +1,20 @@
+id: delivery-outcome-planning
+state: DRAFT
+verification: policy
+mvp_ref: gate-decides
+intent: Integrate practical outcome planning into the existing delivery skill without adding gates or a second planning workflow.
+invariants:
+  - id: INV-01
+    statement: Preserve gate semantics, policy, authorization boundaries and finish-based completion; planning guidance is not a mechanically verified guarantee.
+acceptance_criteria:
+  - id: AC-01
+    statement: The delivery skill requires a useful observable outcome, coherent stage, early checks of material source assumptions and timely handling of missing owner decisions in the existing spec.
+  - id: AC-02
+    statement: The skill places readiness of code, tests, documentation and available source evidence before final fast-workflow gates while preserving required checks and legitimate reruns.
+allowed_paths:
+  - plugins/gatectl/skills/delivery/SKILL.md
+  - docs/specs/ACTIVE
+  - docs/specs/delivery-outcome-planning/**
+rollback:
+  strategy: Revert the delivery skill addition; CLI behavior and policy are unchanged.
+blocking_questions: []
