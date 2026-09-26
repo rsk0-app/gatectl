@@ -55,6 +55,15 @@ At a stage boundary and before the session ends:
 `work checkpoint --next "<next concrete action>" [--goal <goal>] [--done-when <condition>]`.
 The goal carries forward; set it from the owner's words, not a narrower substitute.
 
+## Readiness of the product
+
+`gatectl capabilities [--goal <id>]` maps every feature to the owner's MVP goals from recorded
+evidence: locked spec, gatectl acceptance (at the current tree, an earlier tree or an earlier spec
+revision), whether each criterion's test exists, and whether it passed on this exact version.
+Use it before proposing what to build next and when the owner asks "what actually works".
+`--run` executes tests not yet proven on this version (it can be slow; narrow it with `--goal`).
+Never describe "accepted at an earlier tree" or "not run on this version" as working now.
+
 ## Report to the owner
 
 Keep it to four points, in the owner's language: what we are solving, what is established (and

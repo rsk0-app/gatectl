@@ -1,0 +1,47 @@
+[
+  {
+    "version": 1,
+    "digest": "063d4daff4b73b34eb9fe4cdd17f5ddaa9689e35f8297ad8e71297c6e1b5a6dc",
+    "at": "2026-09-26T17:38:56.621Z",
+    "tier": "A",
+    "requiredTests": [
+      "test/capabilities.test.mjs"
+    ],
+    "allowedPaths": [
+      "src/context/**",
+      "src/core/check-cache.mjs",
+      "src/cli/commands.mjs",
+      "test/capabilities.test.mjs",
+      "plugins/gatectl/bin/gatectl.mjs",
+      "plugins/gatectl/skills/**",
+      "README.md",
+      "CHANGELOG.md",
+      "docs/architecture/**",
+      "docs/specs/capability-map/**",
+      "docs/specs/ACTIVE"
+    ]
+  },
+  {
+    "version": 2,
+    "digest": "81bf1bd8071e0a12211df94127cdcc736c371cafd0927a6edcdca1a2fa8ef698",
+    "at": "2026-09-26T17:57:38.012Z",
+    "tier": "A",
+    "requiredTests": [
+      "test/capabilities.test.mjs"
+    ],
+    "allowedPaths": [
+      "src/context/**",
+      "src/core/check-cache.mjs",
+      "src/cli/commands.mjs",
+      "bin/gatectl.mjs",
+      "test/capabilities.test.mjs",
+      "plugins/gatectl/bin/gatectl.mjs",
+      "plugins/gatectl/skills/**",
+      "README.md",
+      "CHANGELOG.md",
+      "docs/architecture/**",
+      "docs/specs/capability-map/**",
+      "docs/specs/ACTIVE"
+    ]
+  }
+]

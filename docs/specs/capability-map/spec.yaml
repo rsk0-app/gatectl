@@ -1,0 +1,100 @@
+id: capability-map
+state: DRAFT
+mvp_ref: owner-visibility
+intent: |
+  Stage 3 of the context-layer plan (ADR 0001): an honest readiness map of a product, derived from
+  what a gatectl repository already records, so the owner can see what was agreed, what gatectl
+  accepted, which tests exist and what is proven on the current code — without a hand-kept
+  percentage and without claiming "implemented" where nothing records it.
+  `gatectl capabilities [--json] [--goal <id>] [--run]` groups every feature under docs/specs by
+  its mvp_ref against .gatectl/MVP.yaml goals, plus buckets: maintenance, a reference to a goal
+  MVP.yaml does not declare (named), an unset or placeholder reference, and specs that cannot be
+  read. spec.yaml takes precedence; a spec.yaml that does not parse or compile is shown as
+  "spec unreadable" with no fallback to spec.md; one broken feature never hides others. Goals no
+  feature references are listed as "no gatectl feature references this goal (code may exist
+  without a spec)".
+
+  Per feature:
+  - agreed: the spec is locked at its current digest (spec.lock.json), or not.
+  - acceptance: from the verified ledger on this machine, cross-checked with the signed
+    completion record — accepted (latest Complete PASS for the current spec digest and the current
+    tree, whose completion_mac matches an ACCEPT completion record), "accepted at an earlier tree"
+    (same digest, the code has changed since), "an earlier revision was accepted" (PASS for
+    another digest), rejected, not finished, no record here, or unreadable (chain fails, or
+    ledger and completion record disagree). An old PASS without a completion record to cross-check
+    is shown as such. The ledger has no external anchor, so removal of trailing entries is detected
+    only through the completion record; the report says so.
+  Per criterion, every test obligation is listed (a legacy criterion may require several):
+  - present: file exists and, for a named case, the case text appears in it.
+  - on this version: from a signed check receipt for exactly this tree, execution context and the
+    command gate GREEN runs (test_case or test_file), classified by the policy's failure classes:
+    pass, fail, "no test ran" (empty output class), or "not run on this version". With drift
+    between index and working tree no current result is claimed ("index differs from working
+    tree"). Without receipts (no workflow, or cache off) the state is "receipts disabled".
+  - criterion result: pass only when every obligation passes; otherwise the worst of missing,
+    fail, no test ran, not run; "no test declared" for policy-verified criteria.
+  `--run` executes obligations not yet passing on this version through the gates' cached runner
+  with reuse bypassed for them (so a stored "no test ran" receipt is re-executed, not reused);
+  it refuses (exit 2) with drift, with receipts disabled, or without an existing signing key.
+  Output leads with a plain-language summary per goal. Pilot target: rsk0-web.
+  Not in this stage: git-kept capability files, code index, next-step proposals.
+
+invariants:
+  - id: INV-01
+    statement: A criterion is reported passing on the current version only with a signed receipt, classified as a real pass, for the current tree and execution context and the exact command, and no index drift; acceptance of an earlier spec revision or at an earlier tree is never presented as acceptance of the current requirements.
+  - id: INV-02
+    statement: The report writes nothing to ledgers, specs, policy, MVP.yaml or keys. The `--run` option writes only check receipts through the existing cached runner and never creates a key; side effects of the project's own test commands are theirs, as with any gate run.
+  - id: INV-03
+    statement: No gate, next, commit-check or finish imports or reads the capability map.
+
+acceptance_criteria:
+  - id: AC-01
+    statement: Features are grouped under their MVP goal, and under maintenance, an undeclared-goal bucket naming the reference, an unset bucket for missing or placeholder references, and an unreadable bucket for a spec.yaml that fails (without falling back to spec.md); goals no feature references are reported as such; legacy spec.md features are included.
+    test:
+      file: test/capabilities.test.mjs
+      selector: groups features under the owner's goals
+      expected_red: assertion
+  - id: AC-02
+    statement: Acceptance comes from the verified ledger cross-checked with the completion record - accepted for the current digest and tree, accepted at an earlier tree after a later commit changed the code, an earlier revision accepted, rejected, not finished or no record here - and a tampered ledger, or one whose trailing Complete FAIL was removed, is reported unreadable, never accepted; the spec's lock state is shown.
+    test:
+      file: test/capabilities.test.mjs
+      selector: acceptance is read from the verified ledger
+      expected_red: assertion
+  - id: AC-03
+    statement: Every obligation of a criterion is listed; a missing test file or a named case absent from it is not present, and the criterion result is the worst obligation state.
+    test:
+      file: test/capabilities.test.mjs
+      selector: reports tests that are missing from the tree
+      expected_red: assertion
+  - id: AC-04
+    statement: Current-version results come only from receipts for the current tree - not run, then pass, fail or no test ran after `--run` (which re-executes a stored no-test-ran receipt rather than reusing it), not run again after a code change, and no current pass while the working tree differs from a staged index; `--run` refuses with drift, with receipts disabled or without a key; the report itself leaves ledgers and receipts unchanged.
+    test:
+      file: test/capabilities.test.mjs
+      selector: results are proven for this exact version or not claimed
+      expected_red: assertion
+  - id: AC-05
+    statement: Nothing reachable from gate, next, completion or attestation modules imports the capability map.
+    test:
+      file: test/capabilities.test.mjs
+      selector: gates never read the capability map
+      expected_red: assertion
+
+allowed_paths:
+  - src/context/**
+  - src/core/check-cache.mjs
+  - src/cli/commands.mjs
+  - bin/gatectl.mjs
+  - test/capabilities.test.mjs
+  - plugins/gatectl/bin/gatectl.mjs
+  - plugins/gatectl/skills/**
+  - README.md
+  - CHANGELOG.md
+  - docs/architecture/**
+  - docs/specs/capability-map/**
+  - docs/specs/ACTIVE
+
+rollback:
+  strategy: Revert the commit. The report only reads records; receipts written by --run are ordinary check receipts that later gates may reuse or ignore.
+  notes: null
+
+blocking_questions: []

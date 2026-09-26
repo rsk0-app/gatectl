@@ -37,6 +37,31 @@ export function executionContext(root, policy, env = process.env) {
   for (const file of policy.workflow?.input_paths ?? ['.env', '.env.local', '.env.test', '.env.test.local', '.env.production', '.env.production.local']) walk(path.resolve(root, file))
   return hash({ policy, deps, env: childEnv(env, policy.commands?.env_allow ?? []), runtime: process.versions, platform: process.platform, arch: process.arch })
 }
+function receiptId(root, before, context, command, subst) {
+  const argv = commandArgv(command, subst)
+  // Include the resolved executable; PATH content may change without PATH itself changing.
+  const executable = argv[0].includes('/') ? path.resolve(root, argv[0]) : (process.env.PATH ?? '').split(path.delimiter).map(p => path.join(p, argv[0])).find(p => fs.existsSync(p))
+  const stat = executable && fs.existsSync(executable) ? fs.statSync(executable) : null
+  return hash({ before, context, argv, executable, executableStat: stat && [stat.size, stat.mtimeMs, stat.ctimeMs] })
+}
+
+// Read-only: the signed receipt for exactly this candidate, execution context and command, or
+// null. It never runs anything and never creates a key. Returns null (not a function) when the
+// policy keeps no receipts, so callers can say so rather than report "not run".
+export function receiptReader(root, policy) {
+  if (!policy.workflow || policy.workflow.cache === false) return null
+  const key = loadKey(root, { create: false })
+  if (!key.ok) return () => null
+  const before = treeDigest(root), context = executionContext(root, policy)
+  return (command, subst = {}) => {
+    const id = receiptId(root, before, context, command, subst)
+    try {
+      const saved = JSON.parse(fs.readFileSync(path.join(stateDir(root), 'checks', id + '.json'), 'utf8'))
+      return verifySignature(saved, key.key) && saved.id === id ? saved.result : null
+    } catch { return null }
+  }
+}
+
 export function cachedRunner(root, policy, { fresh = false, execute = runCmd, announce = console.log } = {}) {
   const executed = new Set()
   const enabled = !!policy.workflow && policy.workflow.cache !== false
@@ -45,10 +70,7 @@ export function cachedRunner(root, policy, { fresh = false, execute = runCmd, an
     if (indexDrift(root).length) return { code: 2, output: 'Stage the intended candidate before checking: working tree differs from index.' }
     const before = treeDigest(root), context = executionContext(root, policy)
     const argv = commandArgv(command, subst)
-    // Include the resolved executable; PATH content may change without PATH itself changing.
-    const executable = argv[0].includes('/') ? path.resolve(root, argv[0]) : (process.env.PATH ?? '').split(path.delimiter).map(p => path.join(p, argv[0])).find(p => fs.existsSync(p))
-    const stat = executable && fs.existsSync(executable) ? fs.statSync(executable) : null
-    const id = hash({ before, context, argv, executable, executableStat: stat && [stat.size, stat.mtimeMs, stat.ctimeMs] })
+    const id = receiptId(root, before, context, command, subst)
     const key = loadKey(root)
     if (!key.ok) throw new Error(key.detail)
     const file = path.join(stateDir(root), 'checks', id + '.json')

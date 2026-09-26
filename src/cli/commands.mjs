@@ -510,6 +510,26 @@ export const COMMANDS = {
       throw e
     }
   },
+  // The readiness map: derived from recorded evidence, never evidence itself. Lazily imported so no
+  // gate path reaches it.
+  async capabilities(args) {
+    const root = targetRoot(args)
+    let target
+    try { target = openTarget(root) } catch (e) { console.error(e.message); return 2 }
+    const { buildMap, runMissing, renderMap } = await import("../context/capabilities.mjs")
+    const gi = args.indexOf("--goal")
+    const goal = gi === -1 ? null : args[gi + 1]
+    let map = buildMap(root, target.policy, target.mvp)
+    if (args.includes("--run")) {
+      const r = runMissing(root, target.policy, map, { goal })
+      if (r.code !== 0) { console.error(r.message); return r.code }
+      console.error(r.message)
+      map = buildMap(root, target.policy, target.mvp)
+    }
+    if (goal) map = { ...map, groups: map.groups.filter((g) => g.id === goal) }
+    console.log(args.includes("--json") ? JSON.stringify(map, null, 2) : renderMap(map))
+    return 0
+  },
   // The work store is context for agents, never gate evidence. Imported lazily so that node:sqlite
   // is loaded only here, and no gate path can reach it.
   async work(args) {

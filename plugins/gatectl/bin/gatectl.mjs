@@ -3267,13 +3267,590 @@ var init_target = __esm({
   }
 });
 
+// src/core/spec.mjs
+function sections(text) {
+  const out = {};
+  const parts = text.split(/^##\s+/m).slice(1);
+  for (const part of parts) {
+    const nl = part.indexOf("\n");
+    const name = part.slice(0, nl).trim().toLowerCase().replace(/\s+/g, "_");
+    out[name] = part.slice(nl + 1).trim();
+  }
+  return out;
+}
+function parseSpec(text) {
+  const sec = sections(text);
+  const state = /^state:\s*([A-Z_]+)/m.exec(text)?.[1] ?? null;
+  const mvpRef = /^mvp_ref:\s*(\S+)/m.exec(text)?.[1] ?? null;
+  const intent = sec.intent ?? "";
+  const invariants = listItems(sec.invariants);
+  const acceptanceCriteria = listItems(sec.acceptance_criteria);
+  const allowedPaths = listItems(sec.allowed_paths).map((s) => s.replace(/^`|`$/g, ""));
+  const rollback = sec.rollback ?? "";
+  const requiredTests = [];
+  const testObligations = [];
+  const acceptanceCriteriaWithoutTests = [];
+  for (const ac of acceptanceCriteria) {
+    const m = /—\s*required:\s*(.+)$/.exec(ac);
+    if (!m) {
+      acceptanceCriteriaWithoutTests.push(ac);
+      continue;
+    }
+    const id = /^([A-Za-z]+[-_]?\d+)/.exec(ac)?.[1] ?? null;
+    for (const raw of m[1].match(/(?:"[^"]*"|'[^']*'|[^,])+/g) ?? []) {
+      const entry = raw.trim();
+      if (!entry) continue;
+      const sep = entry.indexOf("::");
+      const file = (sep === -1 ? entry : entry.slice(0, sep)).trim().replace(/^`|`$/g, "");
+      const selector = sep === -1 ? null : entry.slice(sep + 2).trim().replace(/^["']|["']$/g, "");
+      if (!requiredTests.includes(file)) requiredTests.push(file);
+      testObligations.push({ ac: id, file, selector: selector || null });
+    }
+  }
+  const blockingQuestions = [...text.matchAll(/^BLOCKING:\s*(.+)$/gm)].map((m) => m[1].trim());
+  const missingSections = REQUIRED.filter((name) => {
+    const v = { intent, invariants, acceptance_criteria: acceptanceCriteria, allowed_paths: allowedPaths, rollback }[name];
+    return Array.isArray(v) ? v.length === 0 : !v;
+  });
+  if (!mvpRef) missingSections.push("mvp_ref");
+  return {
+    state,
+    mvpRef,
+    intent,
+    invariants,
+    acceptanceCriteria,
+    requiredTests,
+    testObligations,
+    acceptanceCriteriaWithoutTests,
+    allowedPaths,
+    rollback,
+    blockingQuestions,
+    missingSections
+  };
+}
+var REQUIRED, listItems;
+var init_spec = __esm({
+  "src/core/spec.mjs"() {
+    REQUIRED = ["intent", "invariants", "acceptance_criteria", "allowed_paths", "rollback"];
+    listItems = (body2) => (body2 ?? "").split(/\r?\n/).filter((l) => l.trim().startsWith("- ")).map((l) => l.trim().slice(2).trim());
+  }
+});
+
+// src/core/attest.mjs
+import crypto3 from "node:crypto";
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.keys(value).sort().filter((k) => k !== "mac" && k !== "sig" && value[k] !== void 0).map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`).join(",")}}`;
+  return JSON.stringify(value ?? null);
+}
+function environment({ versions = process.versions, platform = process.platform, arch = process.arch, commands = {} }) {
+  const env = {
+    node: versions.node ?? null,
+    platform,
+    arch,
+    // The commands themselves, not their output: a green earned with `test_all: "true"` and one
+    // earned with a real suite must not look alike in the record.
+    commands: Object.fromEntries(Object.entries(commands).filter(([, v]) => v !== void 0).sort())
+  };
+  return { ...env, digest: crypto3.createHash("sha256").update(canonical(env)).digest("hex").slice(0, 16) };
+}
+function signIssued(att, privateKey) {
+  const body2 = { ...att, alg: "ed25519" };
+  delete body2.sig;
+  return { ...body2, sig: crypto3.sign(null, Buffer.from(canonical(body2)), privateKey).toString("base64") };
+}
+function verifyIssued(att, publicKey) {
+  if (!att || att.alg !== "ed25519" || typeof att.sig !== "string") return false;
+  const body2 = { ...att };
+  delete body2.sig;
+  try {
+    return crypto3.verify(null, Buffer.from(canonical(body2)), publicKey, Buffer.from(att.sig, "base64"));
+  } catch {
+    return false;
+  }
+}
+function checkIssued({ att, tree, sha, specDigest: specDigest2, policyDigest: policyDigest2 }) {
+  const reasons = [];
+  const commit = att.commit ?? att.head_sha;
+  const issuedTree = att.tree ?? att.tree_oid;
+  const policy = att.policy_digest ?? att.trusted_policy?.digest;
+  if (commit !== sha) reasons.push(`issued for commit ${String(commit).slice(0, 12)}\u2026, not ${sha.slice(0, 12)}\u2026`);
+  if (issuedTree !== tree) reasons.push(`attested tree ${String(issuedTree).slice(0, 12)}\u2026 is not this commit's tree ${tree.slice(0, 12)}\u2026`);
+  const noSpec = att.spec_digest === null || /^0{64}$/.test(String(att.spec_digest));
+  if (specDigest2 === null ? !noSpec : att.spec_digest !== specDigest2)
+    reasons.push("the spec at this commit is not the spec the issuer judged");
+  if (policy !== policyDigest2) reasons.push("the policy at this commit is not the policy the issuer judged under");
+  return { ok: reasons.length === 0, reasons };
+}
+function verifySignature(att, key) {
+  if (!att || typeof att.mac !== "string") return false;
+  const expected = Buffer.from(sign(att, key), "hex");
+  const actual = Buffer.from(att.mac, "hex");
+  return expected.length === actual.length && crypto3.timingSafeEqual(expected, actual);
+}
+function checkAttestation({ att, key, tree, specDigest: specDigest2, policyDigest: policyDigest2, requires, skipSignature = false }) {
+  if (!att) return { ok: false, reasons: ["no attestation"] };
+  if (!skipSignature && !verifySignature(att, key))
+    return { ok: false, reasons: ["signature does not verify \u2014 wrong key, or the attestation was edited"] };
+  const reasons = [];
+  if (att.tree !== tree) reasons.push(`attested tree ${String(att.tree).slice(0, 12)}\u2026 is not this commit's tree ${tree.slice(0, 12)}\u2026`);
+  if (att.spec_digest !== specDigest2) reasons.push("the spec at this commit is not the spec that was gated");
+  if (att.policy_digest !== policyDigest2) reasons.push("the policy at this commit is not the policy that was gated");
+  if (requires) {
+    const attested = new Set(att.gates?.filter((g) => g.status === "PASS").map((g) => g.gate) ?? []);
+    for (const gate of requires) if (!attested.has(gate)) reasons.push(`gate ${gate} is required by this commit's policy but not attested green`);
+  }
+  return { ok: reasons.length === 0, reasons };
+}
+var sign, signAttestation;
+var init_attest = __esm({
+  "src/core/attest.mjs"() {
+    sign = (att, key) => crypto3.createHmac("sha256", key).update(canonical(att)).digest("hex");
+    signAttestation = (att, key) => ({ ...att, mac: sign(att, key) });
+  }
+});
+
+// src/core/spec-compile.mjs
+import crypto4 from "node:crypto";
+function validateSpec(spec) {
+  const errors = [];
+  if (!spec || typeof spec !== "object") return { ok: false, errors: ["spec is not a mapping"] };
+  for (const key of REQUIRED2) if (spec[key] === void 0) errors.push(`missing: ${key}`);
+  if (spec.state !== void 0 && !STATES.includes(spec.state))
+    errors.push(`state must be one of ${STATES.join(", ")} \u2014 got ${JSON.stringify(spec.state)}`);
+  if (spec.id !== void 0 && !isNonEmptyString(spec.id)) errors.push("id must be a non-empty string");
+  if (spec.intent !== void 0 && !isNonEmptyString(spec.intent)) errors.push("intent must be a non-empty string");
+  const list = (name) => Array.isArray(spec[name]) ? spec[name] : [];
+  if (spec.invariants !== void 0 && !Array.isArray(spec.invariants)) errors.push("invariants must be a list");
+  if (spec.acceptance_criteria !== void 0 && !Array.isArray(spec.acceptance_criteria))
+    errors.push("acceptance_criteria must be a list");
+  if (spec.allowed_paths !== void 0 && (!Array.isArray(spec.allowed_paths) || spec.allowed_paths.length === 0))
+    errors.push("allowed_paths must be a non-empty list \u2014 a feature that may touch anything has no scope");
+  if (spec.verification !== void 0 && spec.verification !== "policy") errors.push("verification must be policy when provided");
+  const seenIds = /* @__PURE__ */ new Set();
+  const seenTests = /* @__PURE__ */ new Map();
+  list("invariants").forEach((inv, i) => {
+    if (!isNonEmptyString(inv?.id)) errors.push(`invariants[${i}].id must be a non-empty string`);
+    else if (!ID.test(inv.id)) errors.push(`invariants[${i}].id "${inv.id}" is not of the form INV-01`);
+    else if (seenIds.has(inv.id)) errors.push(`duplicate id: ${inv.id}`);
+    else seenIds.add(inv.id);
+    if (!isNonEmptyString(inv?.statement)) errors.push(`invariants[${i}].statement must be a non-empty string`);
+  });
+  if (Array.isArray(spec.acceptance_criteria) && spec.acceptance_criteria.length === 0)
+    errors.push("acceptance_criteria must not be empty \u2014 a feature that promises nothing cannot be delivered");
+  list("acceptance_criteria").forEach((ac, i) => {
+    if (!isNonEmptyString(ac?.id)) errors.push(`acceptance_criteria[${i}].id must be a non-empty string`);
+    else if (!ID.test(ac.id)) errors.push(`acceptance_criteria[${i}].id "${ac.id}" is not of the form AC-01`);
+    else if (seenIds.has(ac.id)) errors.push(`duplicate id: ${ac.id}`);
+    else seenIds.add(ac.id);
+    if (!isNonEmptyString(ac?.statement)) errors.push(`acceptance_criteria[${i}].statement must be a non-empty string`);
+    if (!ac?.test && spec.verification === "policy") return;
+    if (!ac?.test || typeof ac.test !== "object") {
+      errors.push(`acceptance_criteria[${i}] (${ac?.id ?? "?"}) names no test \u2014 every criterion must be provable`);
+      return;
+    }
+    if (!isNonEmptyString(ac.test.file)) errors.push(`acceptance_criteria[${i}].test.file must be a non-empty string`);
+    if (ac.test.selector !== void 0 && !isNonEmptyString(ac.test.selector))
+      errors.push(`acceptance_criteria[${i}].test.selector must be a non-empty string when present`);
+    const key = `${ac.test.file}::${ac.test.selector ?? ""}`;
+    if (seenTests.has(key)) errors.push(`${ac.id ?? `acceptance_criteria[${i}]`} and ${seenTests.get(key)} name the same test case: ${key}`);
+    else seenTests.set(key, ac.id ?? `acceptance_criteria[${i}]`);
+  });
+  if (spec.blocking_questions !== void 0) {
+    if (!Array.isArray(spec.blocking_questions)) errors.push("blocking_questions must be a list");
+    else spec.blocking_questions.forEach((q, i) => {
+      if (!isNonEmptyString(q)) errors.push(`blocking_questions[${i}] must be a non-empty string`);
+    });
+  }
+  if (spec.rollback !== void 0 && !isNonEmptyString(spec.rollback?.strategy))
+    errors.push("rollback.strategy must be a non-empty string \u2014 how this is undone is part of the promise");
+  return { ok: errors.length === 0, errors };
+}
+function obligations(spec) {
+  return (spec.acceptance_criteria ?? []).filter((ac) => ac.test).map((ac) => ({
+    criterion: ac.id,
+    statement: ac.statement,
+    file: ac.test.file,
+    selector: ac.test.selector ?? null,
+    // Named per obligation rather than assumed globally: a criterion may legitimately be proven
+    // by a test that fails to compile before the change (a missing export), and that is a
+    // different RED from an assertion. Default stays the strict one.
+    expected_red: ac.test.expected_red ?? "assertion"
+  }));
+}
+function compileSpec(spec) {
+  const check = validateSpec(spec);
+  if (!check.ok) return { ok: false, errors: check.errors };
+  const compiled = {
+    ...spec.verification === "policy" ? { verification: "policy" } : {},
+    id: spec.id,
+    state: spec.state,
+    mvp_ref: spec.mvp_ref,
+    intent: spec.intent.trim(),
+    invariants: spec.invariants.map((i) => ({ id: i.id, statement: i.statement.trim() })),
+    acceptance_criteria: spec.acceptance_criteria.map((ac) => ({
+      id: ac.id,
+      statement: ac.statement.trim(),
+      ...ac.test ? { test: { file: ac.test.file, selector: ac.test.selector ?? null, expected_red: ac.test.expected_red ?? "assertion" } } : {}
+    })),
+    allowed_paths: [...spec.allowed_paths],
+    rollback: { strategy: spec.rollback.strategy, notes: spec.rollback.notes ?? null },
+    // Part of the compiled form, and therefore part of the digest: answering a blocking question
+    // changes the spec, and everything bound to the old digest goes stale, as it should.
+    blocking_questions: [...spec.blocking_questions ?? []]
+  };
+  const text = canonical(compiled);
+  return {
+    ok: true,
+    compiled,
+    obligations: obligations(compiled),
+    digest: crypto4.createHash("sha256").update(text).digest("hex"),
+    canonical: text
+  };
+}
+function specFromCompiled(compiled) {
+  const requiredTests = [];
+  for (const ac of compiled.acceptance_criteria) if (ac.test && !requiredTests.includes(ac.test.file)) requiredTests.push(ac.test.file);
+  return {
+    state: compiled.state,
+    mvpRef: compiled.mvp_ref,
+    intent: compiled.intent,
+    invariants: compiled.invariants.map((i) => `${i.id} ${i.statement}`),
+    acceptanceCriteria: compiled.acceptance_criteria.map((ac) => `${ac.id} ${ac.statement}`),
+    requiredTests,
+    testObligations: compiled.acceptance_criteria.filter((ac) => ac.test).map((ac) => ({
+      ac: ac.id,
+      file: ac.test.file,
+      selector: ac.test.selector,
+      expectedRed: ac.test.expected_red
+    })),
+    // The compiler refuses a criterion without a test, so this is empty by construction rather
+    // than by luck. Gate L still checks it: one place to look when the rule changes.
+    acceptanceCriteriaWithoutTests: compiled.acceptance_criteria.filter((ac) => !ac.test).map((ac) => ac.id),
+    allowedPaths: [...compiled.allowed_paths],
+    rollback: compiled.rollback.strategy,
+    blockingQuestions: [...compiled.blocking_questions ?? []],
+    missingSections: []
+  };
+}
+var ID, REQUIRED2, STATES, isNonEmptyString;
+var init_spec_compile = __esm({
+  "src/core/spec-compile.mjs"() {
+    init_attest();
+    ID = /^[A-Z]{2,4}-\d{2,3}$/;
+    REQUIRED2 = ["id", "state", "mvp_ref", "intent", "invariants", "acceptance_criteria", "allowed_paths", "rollback"];
+    STATES = ["DRAFT", "SPEC_REVIEWED", "LOCKED", "RED_PROVEN", "IMPLEMENTING", "GREEN", "REVIEWED", "VERIFIED", "COMPLETED"];
+    isNonEmptyString = (v) => typeof v === "string" && v.trim().length > 0;
+  }
+});
+
+// src/core/tier.mjs
+function globToRegExp(glob) {
+  const re = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*\//g, "").replace(/\*\*/g, "").replace(/\*/g, "[^/]*").replace(/\u0001/g, "(?:.*/)?").replace(/\u0002/g, ".*");
+  return new RegExp(`^${re}$`);
+}
+function matchesAny(path14, globs) {
+  return (globs ?? []).some((g) => globToRegExp(g).test(path14));
+}
+function tierOf(changedPaths2, policy) {
+  const fallback = policy.unmatched_tier ?? "A";
+  if (!ORDER.includes(fallback))
+    throw new TypeError(`policy.unmatched_tier names an unknown tier: "${fallback}"`);
+  let highest = 2;
+  let any = false;
+  for (const p of changedPaths2) {
+    const idx = ORDER.findIndex((t) => matchesAny(p, policy.tiers?.[t]?.paths));
+    const eff = idx === -1 ? ORDER.indexOf(fallback) : idx;
+    if (!any || eff < highest) highest = eff;
+    any = true;
+  }
+  return any ? ORDER[highest] : fallback;
+}
+function higherTier(a, b) {
+  const ia = ORDER.indexOf(a);
+  const ib = ORDER.indexOf(b);
+  if (ia === -1) throw new TypeError(`unknown tier: "${a}"`);
+  if (ib === -1) throw new TypeError(`unknown tier: "${b}"`);
+  return ORDER[Math.min(ia, ib)];
+}
+function effectiveTier(allowedPaths, changedPaths2, policy) {
+  const declared = tierOf(allowedPaths, policy);
+  if (!changedPaths2 || changedPaths2.length === 0) return declared;
+  return higherTier(declared, tierOf(changedPaths2, policy));
+}
+function shippedPaths(changed, specDir, metaClass = []) {
+  const engine = ["spec.md", "spec.yaml", "critique.md", "spec.lock.json"].map((name) => `${specDir}/${name}`).concat("docs/specs/ACTIVE", metaClass);
+  return (changed ?? []).filter((p) => !matchesAny(p, engine));
+}
+var ORDER;
+var init_tier = __esm({
+  "src/core/tier.mjs"() {
+    ORDER = ["A", "B", "C"];
+  }
+});
+
+// src/core/lock.mjs
+import { createHash } from "node:crypto";
+function appendLock(locks, entry) {
+  const prev = locks[locks.length - 1];
+  if (prev && prev.digest === entry.digest) return locks;
+  return [...locks, { version: locks.length + 1, ...entry }];
+}
+var specDigest, latestLock;
+var init_lock = __esm({
+  "src/core/lock.mjs"() {
+    specDigest = (text) => createHash("sha256").update(text, "utf8").digest("hex");
+    latestLock = (locks) => locks[locks.length - 1] ?? null;
+  }
+});
+
+// src/core/ledger.mjs
+import fs3 from "node:fs";
+import path4 from "node:path";
+import crypto5 from "node:crypto";
+function appendEntry(ledgerPath, entry, key) {
+  const prev = fs3.existsSync(ledgerPath) ? lastMac(ledgerPath) : "";
+  fs3.mkdirSync(path4.dirname(ledgerPath), { recursive: true });
+  fs3.appendFileSync(ledgerPath, JSON.stringify({ entry, prev, mac: mac(key, body(entry, prev)) }) + "\n");
+}
+function lines(ledgerPath) {
+  return fs3.readFileSync(ledgerPath, "utf8").split("\n").filter((l) => l.trim());
+}
+function lastMac(ledgerPath) {
+  const all = lines(ledgerPath);
+  if (all.length === 0) return "";
+  try {
+    return JSON.parse(all[all.length - 1]).mac ?? "";
+  } catch {
+    return "";
+  }
+}
+function readLedger(ledgerPath, key) {
+  if (!fs3.existsSync(ledgerPath)) return { ok: true, entries: [], head: "" };
+  const entries = [];
+  let prev = "";
+  let i = 0;
+  for (const raw of lines(ledgerPath)) {
+    i += 1;
+    let line;
+    try {
+      line = JSON.parse(raw);
+    } catch {
+      return { ok: false, entries: [], head: "", detail: `entry ${i} is not valid JSON` };
+    }
+    if (line.prev !== prev)
+      return { ok: false, entries: [], head: "", detail: `entry ${i} breaks the chain \u2014 an entry was edited, deleted or reordered` };
+    if (line.mac !== mac(key, body(line.entry, line.prev)))
+      return { ok: false, entries: [], head: "", detail: `entry ${i} does not match its signature \u2014 the ledger was modified outside gatectl, or signed with another key` };
+    entries.push(line.entry);
+    prev = line.mac;
+  }
+  return { ok: true, entries, head: prev };
+}
+var mac, body;
+var init_ledger = __esm({
+  "src/core/ledger.mjs"() {
+    mac = (key, payload) => crypto5.createHmac("sha256", key).update(payload).digest("hex");
+    body = (entry, prev) => JSON.stringify({ entry, prev });
+  }
+});
+
+// src/core/gates.mjs
+function gateL({ spec, critique, tier, policy, mvp }) {
+  const reasons = [];
+  if (spec.missingSections.length) reasons.push(`missing sections: ${spec.missingSections.join(", ")}`);
+  if (spec.blockingQuestions.length) reasons.push(`open BLOCKING questions: ${spec.blockingQuestions.length}`);
+  if ((policy.tiers?.[tier]?.requires ?? ["R"]).includes("R") && spec.acceptanceCriteriaWithoutTests.length)
+    reasons.push(`acceptance criteria naming no required test: ${spec.acceptanceCriteriaWithoutTests.length}`);
+  if (spec.mvpRef && spec.mvpRef !== "maintenance") {
+    const known = (mvp?.mvp_done_when ?? []).some((e) => e.id === spec.mvpRef);
+    if (!known) reasons.push(`mvp_ref "${spec.mvpRef}" not found in .gatectl/MVP.yaml mvp_done_when`);
+  }
+  const critiqueRequired = policy.critic === void 0 ? true : (policy.critic.required_for_tiers ?? []).includes(tier);
+  const hasCritique = !!critique && Array.isArray(critique.findings) && critique.findings.length > 0;
+  if (hasCritique) {
+    const open = critique.findings.filter((f) => SEVERE.has(f.severity) && !f.resolved);
+    if (open.length) reasons.push(`unresolved critical/high findings: ${open.length}`);
+  } else if (critiqueRequired) {
+    if (reasons.length)
+      return { status: "FAIL", reasons: [...reasons, "critique also absent/empty \u2014 not evaluated"] };
+    return {
+      status: "NOT_EVALUATED",
+      reasons: [...reasons, "critique absent or recorded zero findings \u2014 a critique that finds nothing is not approval"]
+    };
+  }
+  return { status: reasons.length ? "FAIL" : "PASS", reasons };
+}
+function classifyFailure(output, policy) {
+  const classes = policy.failure_classes ?? {};
+  for (const [name, patterns] of [["load", classes.load ?? []], ["empty", classes.empty ?? []], ["assertion", classes.assertion ?? []]])
+    if (patterns.some((p) => new RegExp(p, "im").test(output))) return name;
+  return "unknown";
+}
+function gateR({ obligations: obligations2, run, caseCommand = false }, policy) {
+  if (!obligations2?.length)
+    return { status: "NOT_EVALUATED", reasons: ["spec names no required tests"], perTest: [] };
+  const perTest = [];
+  const failReasons = [];
+  const neReasons = [];
+  const canDetectEmpty = (policy.failure_classes?.empty ?? []).length > 0;
+  for (const o of obligations2) {
+    const label = o.selector ? `${o.file}::"${o.selector}"` : o.file;
+    if (o.selector && !caseCommand) {
+      perTest.push({ ...o, verdict: "no-case-command" });
+      neReasons.push(`${label}: the spec names a case but policy has no test_case command \u2014 running the whole file would prove something else`);
+      continue;
+    }
+    const r = run(o);
+    const kind = classifyFailure(r.output, policy);
+    if (kind === "empty") {
+      perTest.push({ ...o, verdict: "empty" });
+      neReasons.push(`${label}: the runner executed no matching test \u2014 a case that never ran is not RED`);
+      continue;
+    }
+    if (r.code === 0) {
+      perTest.push({ ...o, verdict: "passes" });
+      const ambiguous = o.selector && !canDetectEmpty;
+      failReasons.push(ambiguous ? `${label} exited 0 \u2014 either the case already passes, or the runner matched nothing; policy defines no failure_classes.empty patterns, so gatectl cannot tell which` : `${label} already passes \u2014 nothing to implement against`);
+      continue;
+    }
+    perTest.push({ ...o, verdict: kind });
+    if (kind === "load" || kind === "unknown") neReasons.push(`${label}: ${kind} failure is NOT_EVALUATED, never RED`);
+  }
+  if (failReasons.length) return { status: "FAIL", reasons: [...failReasons, ...neReasons], perTest };
+  if (neReasons.length) return { status: "NOT_EVALUATED", reasons: neReasons, perTest };
+  return { status: "PASS", reasons: [], perTest };
+}
+function diffChecks({ changed, diffText, allowedPaths, specDir, metaClass, verifiedArtifacts = [] }) {
+  const reasons = [];
+  const bookkeeping = [`${specDir}/spec.md`, `${specDir}/spec.yaml`, `${specDir}/critique.md`, "docs/specs/ACTIVE"];
+  for (const p of changed) {
+    if (p === `${specDir}/spec.lock.json` && verifiedArtifacts.includes(p)) continue;
+    if (matchesAny(p, metaClass)) {
+      reasons.push(`meta-class file touched: ${p}`);
+      continue;
+    }
+    if (bookkeeping.includes(p)) continue;
+    if (!matchesAny(p, allowedPaths)) reasons.push(`changed outside allowed_paths: ${p}`);
+  }
+  const deleted = [...diffText.matchAll(/^diff --git a\/(\S+) b\/\S+\r?\ndeleted file/gm)].map((m) => m[1]);
+  for (const p of deleted) if (/\.(test|spec)\./.test(p)) reasons.push(`test file deleted: ${p}`);
+  let currentFile = null;
+  for (const line of diffText.split("\n")) {
+    const fileMatch = line.match(/^diff --git a\/(\S+) b\//);
+    if (fileMatch) currentFile = fileMatch[1];
+    if (line.startsWith("+") && currentFile && /\.(test|spec)\./.test(currentFile)) {
+      if (/\b(?:it|describe|test|suite)\s*\.\s*(only|skip)\s*\(/.test(line))
+        reasons.push(`added ${line.includes(".only") ? ".only" : ".skip"} in: ${line.trim().slice(0, 80)}`);
+    }
+  }
+  return reasons;
+}
+function excerpt(text, { head = 12, tail = 12 } = {}) {
+  const lines2 = text.replace(/\s+$/, "").split("\n");
+  if (lines2.length <= head + tail) return lines2.join("\n");
+  const omitted = lines2.length - head - tail;
+  return [...lines2.slice(0, head), `\u2026 ${omitted} more line(s) omitted \u2026`, ...lines2.slice(-tail)].join("\n");
+}
+function diagnostics(r) {
+  const parts = [];
+  const out = (r.stdout ?? "").trim();
+  const err = (r.stderr ?? "").trim();
+  if (out) parts.push(`stdout:
+${excerpt(out)}`);
+  if (err) parts.push(`stderr:
+${excerpt(err)}`);
+  if (!parts.length && (r.output ?? "").trim()) parts.push(excerpt(r.output.trim()));
+  return parts.length ? parts.join("\n") : "(no output)";
+}
+function runSteps(run, steps) {
+  const reasons = [];
+  const skipped = [];
+  for (const [name, cmd2, subst] of steps) {
+    if (cmd2 === DECLARED_ABSENT) {
+      skipped.push(name);
+      continue;
+    }
+    if (!cmd2) return { notEvaluated: `policy has no command for ${name}`, reasons, skipped };
+    const r = run(cmd2, subst ?? {});
+    if (r.code !== 0) reasons.push(`${name} failed (exit ${r.code}):
+${diagnostics(r)}`);
+  }
+  return { reasons, skipped };
+}
+function gateGfast({ run, policy, changed }) {
+  if (changed.length === 0) return { status: "NOT_EVALUATED", reasons: ["empty diff \u2014 nothing to gate"] };
+  const testFiles = changed.filter((p) => /\.(test|spec)\./.test(p));
+  const srcFiles = changed.filter((p) => !testFiles.includes(p));
+  const { notEvaluated, reasons, skipped } = runSteps(run, [
+    ["typecheck", policy.commands?.typecheck],
+    ["related tests", policy.commands?.test_related, { files: [...srcFiles, ...testFiles] }]
+  ]);
+  if (notEvaluated) return { status: "NOT_EVALUATED", reasons: [notEvaluated], skipped };
+  return { status: reasons.length ? "FAIL" : "PASS", reasons, skipped };
+}
+function gateGfull({ run, policy, changed, diffText, spec, specDir, verifiedArtifacts = [] }) {
+  if (changed.length === 0) return { status: "NOT_EVALUATED", reasons: ["empty diff \u2014 nothing to gate"] };
+  const { notEvaluated, reasons, skipped } = runSteps(run, [
+    ["typecheck", policy.commands?.typecheck],
+    ["build", policy.commands?.build],
+    ["full suite", policy.commands?.test_all]
+  ]);
+  if (notEvaluated) return { status: "NOT_EVALUATED", reasons: [notEvaluated], skipped };
+  reasons.push(...diffChecks({ changed, diffText, allowedPaths: spec.allowedPaths, specDir, metaClass: policy.meta_class ?? [], verifiedArtifacts }));
+  return { status: reasons.length ? "FAIL" : "PASS", reasons, skipped };
+}
+function gateC({ results, requires, digest, tree, tests, drift = [], blockers = [] }) {
+  const reasons = [...blockers];
+  if (drift.length)
+    reasons.push(`working tree has drifted from the index \u2014 the gates ran against content this commit will not carry: ${drift.join(", ")}`);
+  for (const gate of requires) {
+    const latest = [...results].reverse().find((r) => r.gate === gate);
+    if (!latest) {
+      reasons.push(`gate ${gate} never ran for this feature`);
+      continue;
+    }
+    if (typeof latest.digest !== "string") {
+      reasons.push(`gate ${gate} has a malformed ledger entry`);
+      continue;
+    }
+    if (latest.digest !== digest) {
+      reasons.push(`gate ${gate} is green for a stale digest (${latest.digest.slice(0, 8)}\u2026)`);
+      continue;
+    }
+    if (TREE_BOUND.has(gate)) {
+      if (tree !== void 0 && latest.tree !== tree) {
+        reasons.push(`gate ${gate} is green for a stale tree`);
+        continue;
+      }
+    } else if (gate === "R") {
+      if (tests !== void 0 && latest.tests !== tests) {
+        reasons.push(`gate ${gate} is green for stale required tests`);
+        continue;
+      }
+    }
+    if (latest.status !== "PASS") reasons.push(`gate ${gate} is ${latest.status}`);
+  }
+  return { status: reasons.length ? "FAIL" : "PASS", reasons };
+}
+var SEVERE, DECLARED_ABSENT, TREE_BOUND;
+var init_gates = __esm({
+  "src/core/gates.mjs"() {
+    init_tier();
+    SEVERE = /* @__PURE__ */ new Set(["critical", "high"]);
+    DECLARED_ABSENT = "none";
+    TREE_BOUND = /* @__PURE__ */ new Set(["Gfast", "Gfull", "X"]);
+  }
+});
+
 // src/core/goal.mjs
 import fs5 from "node:fs";
 import path6 from "node:path";
 import crypto9 from "node:crypto";
 function goalId(g) {
-  const agreed = { owner_words: g.owner_words ?? [], goal: g.goal ?? "", success: g.success ?? [], out_of_scope: g.out_of_scope ?? [] };
-  return `G-${crypto9.createHash("sha256").update(JSON.stringify(agreed)).digest("hex")}`;
+  const agreed2 = { owner_words: g.owner_words ?? [], goal: g.goal ?? "", success: g.success ?? [], out_of_scope: g.out_of_scope ?? [] };
+  return `G-${crypto9.createHash("sha256").update(JSON.stringify(agreed2)).digest("hex")}`;
 }
 function confirmationIn(text) {
   const normalized = String(text).trim().toLowerCase().replace(/\s+/g, " ").replace(/[\s.!…]+$/u, "");
@@ -3462,10 +4039,341 @@ var init_goal = __esm({
   }
 });
 
-// src/context/store.mjs
+// src/core/check-cache.mjs
+import fs7 from "node:fs";
+import path8 from "node:path";
+import crypto10 from "node:crypto";
+function executionContext(root, policy, env = process.env) {
+  const deps = [], seen = /* @__PURE__ */ new Set();
+  function walk(file, resolved) {
+    let real, s;
+    if (resolved === void 0) {
+      if (!fs7.existsSync(file)) return;
+      real = fs7.realpathSync(file);
+      s = fs7.statSync(real);
+    } else {
+      try {
+        s = fs7.lstatSync(resolved);
+      } catch {
+        return;
+      }
+      real = resolved;
+      if (s.isSymbolicLink()) {
+        if (!fs7.existsSync(resolved)) return;
+        real = fs7.realpathSync(resolved);
+        s = fs7.statSync(real);
+      }
+    }
+    if (seen.has(real)) return;
+    seen.add(real);
+    deps.push([file, real, s.size, s.mtimeMs, s.ctimeMs, s.mode]);
+    if (s.isDirectory()) for (const name of fs7.readdirSync(real).sort())
+      walk(path8.join(file, name), path8.join(real, name));
+  }
+  for (const dir of policy.workflow?.dependency_paths ?? ["node_modules", ".venv"]) walk(path8.resolve(root, dir));
+  for (const file of policy.workflow?.input_paths ?? [".env", ".env.local", ".env.test", ".env.test.local", ".env.production", ".env.production.local"]) walk(path8.resolve(root, file));
+  return hash({ policy, deps, env: childEnv(env, policy.commands?.env_allow ?? []), runtime: process.versions, platform: process.platform, arch: process.arch });
+}
+function receiptId(root, before, context, command, subst) {
+  const argv = commandArgv(command, subst);
+  const executable = argv[0].includes("/") ? path8.resolve(root, argv[0]) : (process.env.PATH ?? "").split(path8.delimiter).map((p) => path8.join(p, argv[0])).find((p) => fs7.existsSync(p));
+  const stat = executable && fs7.existsSync(executable) ? fs7.statSync(executable) : null;
+  return hash({ before, context, argv, executable, executableStat: stat && [stat.size, stat.mtimeMs, stat.ctimeMs] });
+}
+function receiptReader(root, policy) {
+  if (!policy.workflow || policy.workflow.cache === false) return null;
+  const key = loadKey(root, { create: false });
+  if (!key.ok) return () => null;
+  const before = treeDigest(root), context = executionContext(root, policy);
+  return (command, subst = {}) => {
+    const id = receiptId(root, before, context, command, subst);
+    try {
+      const saved = JSON.parse(fs7.readFileSync(path8.join(stateDir(root), "checks", id + ".json"), "utf8"));
+      return verifySignature(saved, key.key) && saved.id === id ? saved.result : null;
+    } catch {
+      return null;
+    }
+  };
+}
+function cachedRunner(root, policy, { fresh = false, execute = runCmd, announce = console.log } = {}) {
+  const executed = /* @__PURE__ */ new Set();
+  const enabled = !!policy.workflow && policy.workflow.cache !== false;
+  return (command, subst = {}) => {
+    if (!enabled) return execute(root, command, subst, { allow: policy.commands?.env_allow ?? [] });
+    if (indexDrift(root).length) return { code: 2, output: "Stage the intended candidate before checking: working tree differs from index." };
+    const before = treeDigest(root), context = executionContext(root, policy);
+    const argv = commandArgv(command, subst);
+    const id = receiptId(root, before, context, command, subst);
+    const key = loadKey(root);
+    if (!key.ok) throw new Error(key.detail);
+    const file = path8.join(stateDir(root), "checks", id + ".json");
+    if ((!fresh || executed.has(id)) && fs7.existsSync(file)) {
+      try {
+        const saved = JSON.parse(fs7.readFileSync(file, "utf8"));
+        if (verifySignature(saved, key.key) && saved.id === id && saved.result.code === 0) {
+          announce(`  reused check: ${argv.join(" ")}`);
+          return saved.result;
+        }
+      } catch {
+      }
+    }
+    const result2 = execute(root, command, subst, { allow: policy.commands?.env_allow ?? [] });
+    if (indexDrift(root).length || treeDigest(root) !== before || executionContext(root, policy) !== context)
+      return { code: 1, output: "Candidate or execution environment changed during the check; rerun on stable inputs." };
+    fs7.mkdirSync(path8.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs7.writeFileSync(tmp, JSON.stringify(signAttestation({ id, result: result2, at: (/* @__PURE__ */ new Date()).toISOString() }, key.key)), { mode: 384 });
+    fs7.renameSync(tmp, file);
+    executed.add(id);
+    return result2;
+  };
+}
+var hash;
+var init_check_cache = __esm({
+  "src/core/check-cache.mjs"() {
+    init_target();
+    init_authority();
+    init_attest();
+    hash = (value) => crypto10.createHash("sha256").update(canonical(value)).digest("hex");
+  }
+});
+
+// src/context/capabilities.mjs
+var capabilities_exports = {};
+__export(capabilities_exports, {
+  buildMap: () => buildMap,
+  renderMap: () => renderMap,
+  runMissing: () => runMissing
+});
 import fs8 from "node:fs";
-import os4 from "node:os";
 import path9 from "node:path";
+function readFeature(root, slug) {
+  const dir = path9.join(root, "docs/specs", slug);
+  const yamlPath = path9.join(dir, "spec.yaml"), mdPath = path9.join(dir, "spec.md");
+  if (fs8.existsSync(yamlPath)) {
+    let parsed;
+    try {
+      parsed = yaml.load(fs8.readFileSync(yamlPath, "utf8"));
+    } catch (e) {
+      return { slug, error: `spec.yaml is not valid YAML: ${e.message.split("\n")[0]}` };
+    }
+    const result2 = compileSpec(parsed);
+    if (!result2.ok) return { slug, error: `spec.yaml does not compile: ${result2.errors.join("; ")}` };
+    const c = result2.compiled;
+    return {
+      slug,
+      dir,
+      digest: result2.digest,
+      mvp_ref: c.mvp_ref ?? null,
+      intent: String(c.intent ?? "").trim().split("\n")[0],
+      criteria: (c.acceptance_criteria ?? []).map((ac) => ({
+        id: ac.id,
+        statement: ac.statement,
+        obligations: result2.obligations.filter((o) => o.criterion === ac.id).map((o) => ({ file: o.file, selector: o.selector }))
+      }))
+    };
+  }
+  if (!fs8.existsSync(mdPath)) return null;
+  const text = fs8.readFileSync(mdPath, "utf8");
+  const s = parseSpec(text);
+  const byId = /* @__PURE__ */ new Map();
+  for (const o of s.testObligations) {
+    const id = o.ac ?? "AC-?";
+    if (!byId.has(id)) byId.set(id, []);
+    byId.get(id).push({ file: o.file, selector: o.selector });
+  }
+  const criteria = [...byId].map(([id, obligations2]) => ({ id, statement: s.acceptanceCriteria.find((a) => a.startsWith(id)) ?? id, obligations: obligations2 }));
+  s.acceptanceCriteriaWithoutTests.forEach((statement, i) => criteria.push({ id: /^([A-Za-z]+[-_]?\d+)/.exec(statement)?.[1] ?? `untested-${i + 1}`, statement, obligations: [] }));
+  return { slug, dir, digest: specDigest(text), mvp_ref: s.mvpRef, intent: String(s.intent).trim().split("\n")[0], criteria };
+}
+function agreed(f) {
+  try {
+    const locks = JSON.parse(fs8.readFileSync(path9.join(f.dir, "spec.lock.json"), "utf8"));
+    const last = latestLock(Array.isArray(locks) ? locks : []);
+    if (!last) return "not locked";
+    return last.digest === f.digest ? "locked" : "locked at an earlier revision";
+  } catch {
+    return "not locked";
+  }
+}
+function acceptance(root, f, key, tree) {
+  try {
+    return readAcceptance(root, f, key, tree);
+  } catch (e) {
+    return { state: "unreadable", note: `the ledger cannot be read (${e.message.split("\n")[0]})` };
+  }
+}
+function readAcceptance(root, f, key, tree) {
+  const file = ledgerFile(root, f.slug);
+  const completionPath = path9.join(path9.dirname(attestationFile(root, f.slug)), "completion.json");
+  const hasCompletion = fs8.existsSync(completionPath);
+  if (!fs8.existsSync(file))
+    return hasCompletion ? { state: "unreadable", note: "a completion record exists but the ledger is missing" } : { state: "no record here" };
+  if (!key.ok) return { state: "unreadable", note: key.detail };
+  const ledger = readLedger(file, key.key);
+  if (!ledger.ok) return { state: "unreadable", note: "the ledger's signature chain does not verify" };
+  const last = [...ledger.entries].reverse().find((e) => e.gate === "Complete");
+  if (!last) return hasCompletion ? { state: "unreadable", note: "a completion record exists but the ledger has no Complete entry" } : { state: "not finished" };
+  let note2 = null;
+  if (hasCompletion) {
+    let completion;
+    try {
+      completion = JSON.parse(fs8.readFileSync(completionPath, "utf8"));
+    } catch {
+      completion = null;
+    }
+    if (!completion || !verifySignature(completion, key.key)) return { state: "unreadable", note: "the completion record does not verify" };
+    if (last.completion_mac && completion.mac !== last.completion_mac || completion.decision === "ACCEPT" !== (last.status === "PASS"))
+      return { state: "unreadable", note: "the ledger and the latest completion record disagree" };
+    if (!last.completion_mac) note2 = "not cross-checked: older ledger entry without a completion link";
+  } else if (last.completion_mac) return { state: "unreadable", note: "the ledger names a completion record that is missing" };
+  else note2 = "not cross-checked: older ledger without a completion record";
+  const at = last.at ?? null;
+  const base = last.status !== "PASS" ? "rejected" : last.digest !== f.digest ? "an earlier revision was accepted" : last.tree !== tree ? "accepted at an earlier tree" : "accepted";
+  return { state: note2 && base !== "rejected" ? `${base} (not cross-checked)` : base, at, ...note2 ? { note: note2 } : {} };
+}
+function buildMap(root, policy, mvp) {
+  const tree = treeDigest(root);
+  const drift = indexDrift(root).length > 0;
+  const reader = receiptReader(root, policy);
+  const key = loadKey(root, { create: false });
+  const commands = policy.commands ?? {};
+  const current = (o) => {
+    if (drift) return "index differs from working tree";
+    if (!reader) return "receipts disabled";
+    const command = o.selector ? commands.test_case : commands.test_file;
+    if (!command || command === "none") return "not run on this version";
+    const saved = reader(command, o.selector ? { file: o.file, selector: o.selector } : { file: o.file });
+    if (!saved) return "not run on this version";
+    if (classifyFailure(saved.output ?? "", policy) === "empty") return "no test ran";
+    return saved.code === 0 ? "pass" : "fail";
+  };
+  const specsDir = path9.join(root, "docs/specs");
+  const slugs = fs8.existsSync(specsDir) ? fs8.readdirSync(specsDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort() : [];
+  const features = [];
+  for (const slug of slugs) {
+    const f = readFeature(root, slug);
+    if (!f) continue;
+    if (f.error) {
+      features.push({ slug, error: f.error, bucket: "unreadable" });
+      continue;
+    }
+    const criteria = f.criteria.map((c) => {
+      const obligations2 = c.obligations.map((o) => {
+        const file = path9.join(root, o.file);
+        const present = fs8.existsSync(file) && (!o.selector || fs8.readFileSync(file, "utf8").includes(o.selector));
+        return { file: o.file, selector: o.selector, present, current: present ? current(o) : "missing" };
+      });
+      return { id: c.id, statement: c.statement, result: obligations2.length ? worst(obligations2.map((o) => o.current)) : "no test declared", obligations: obligations2 };
+    });
+    features.push({ slug, intent: f.intent, mvp_ref: f.mvp_ref, agreed: agreed(f), acceptance: acceptance(root, f, key, tree), criteria });
+  }
+  const goals = (mvp?.mvp_done_when ?? []).filter((g) => g?.id);
+  const goalIds = new Set(goals.map((g) => g.id));
+  const bucketOf = (f) => f.bucket ?? (goalIds.has(f.mvp_ref) ? `goal:${f.mvp_ref}` : f.mvp_ref === "maintenance" ? "maintenance" : !f.mvp_ref || /^REPLACE/.test(f.mvp_ref) ? "unset" : `undeclared:${f.mvp_ref}`);
+  const of = (bucket) => features.filter((f) => bucketOf(f) === bucket);
+  const groups = [
+    ...goals.map((g) => ({ kind: "goal", id: g.id, text: g.text ?? "", features: of(`goal:${g.id}`) })),
+    { kind: "maintenance", id: "maintenance", text: "maintenance (no product goal)", features: of("maintenance") },
+    ...[...new Set(features.map(bucketOf).filter((b) => b.startsWith("undeclared:")))].sort().map((b) => ({ kind: "undeclared", id: b.slice(11), text: "a goal .gatectl/MVP.yaml does not declare", features: of(b) })),
+    { kind: "unset", id: "unset", text: "mvp_ref missing or still a template placeholder", features: of("unset") },
+    { kind: "unreadable", id: "unreadable", text: "specs gatectl cannot read", features: of("unreadable") }
+  ];
+  for (const g of groups) {
+    if (g.kind === "goal" && !g.features.length) g.note = "no gatectl feature references this goal (code may exist without a spec)";
+    const count = (list) => list.reduce((acc, k) => ({ ...acc, [k]: (acc[k] ?? 0) + 1 }), {});
+    g.summary = {
+      features: g.features.length,
+      acceptance: count(g.features.filter((f) => f.acceptance).map((f) => f.acceptance.state)),
+      criteria: count(g.features.flatMap((f) => f.criteria ?? []).map((c) => c.result))
+    };
+  }
+  return { tree, drift, receipts: reader ? "enabled" : "disabled", groups };
+}
+function runMissing(root, policy, map2, { goal = null } = {}) {
+  if (!policy.workflow || policy.workflow.cache === false)
+    return { code: 2, message: "RECEIPTS_DISABLED: this policy keeps no check receipts (no workflow, or workflow.cache: false), so results could not be shown afterwards" };
+  if (!loadKey(root, { create: false }).ok)
+    return { code: 2, message: "NO_KEY: no signing key for this repository yet; run any gatectl check first (e.g. gatectl check-related)" };
+  if (indexDrift(root).length) return { code: 2, message: "INDEX_DRIFT: the working tree differs from the staged index; stage or stash the difference first" };
+  const run = cachedRunner(root, policy, { fresh: true, announce: () => {
+  } });
+  const done = /* @__PURE__ */ new Set();
+  let ran = 0;
+  for (const g of map2.groups) {
+    if (goal && g.id !== goal) continue;
+    for (const f of g.features) for (const c of f.criteria ?? []) for (const o of c.obligations) {
+      if (!o.present || o.current === "pass") continue;
+      const command = o.selector ? policy.commands?.test_case : policy.commands?.test_file;
+      if (!command || command === "none") continue;
+      const subst = o.selector ? { file: o.file, selector: o.selector } : { file: o.file };
+      const id = JSON.stringify([command, subst]);
+      if (done.has(id)) continue;
+      done.add(id);
+      const r = run(command, subst);
+      if (r.code === 2 && /Stage the intended candidate|changed during the check/.test(r.output ?? "")) return { code: 2, message: `INDEX_DRIFT: ${r.output}` };
+      ran++;
+    }
+  }
+  return { code: 0, message: `ran ${ran} test command(s) on this version; receipts recorded` };
+}
+function renderMap(map2) {
+  const lines2 = [
+    "Capability map (context, not gate evidence)",
+    map2.drift ? "Code: the working tree differs from the staged index \u2014 no result is claimed for the current version" : `Code: tree ${map2.tree.slice(0, 12)}\u2026 \u2014 "on this version" means a signed check receipt for exactly this tree`,
+    map2.receipts === "disabled" ? "Receipts: this policy keeps none, so no current result can be shown" : "Receipts: enabled",
+    ""
+  ];
+  const phrase = (obj) => Object.entries(obj).map(([k, v]) => `${v} ${k}`).join(", ") || "none";
+  for (const g of map2.groups) {
+    if (g.kind !== "goal" && !g.features.length) continue;
+    lines2.push(g.kind === "goal" ? `${g.id} \u2014 ${g.text}` : g.kind === "undeclared" ? `undeclared goal "${g.id}" \u2014 ${g.text}` : `${g.id} \u2014 ${g.text}`);
+    if (g.note) {
+      lines2.push(`  ${g.note}`, "");
+      continue;
+    }
+    lines2.push(`  ${g.summary.features} feature(s): ${phrase(g.summary.acceptance)}`);
+    if (Object.keys(g.summary.criteria).length) lines2.push(`  criteria: ${phrase(g.summary.criteria)}`);
+    for (const f of g.features) {
+      if (f.error) {
+        lines2.push(`  - ${f.slug}: ${f.error}`);
+        continue;
+      }
+      const crit = f.criteria.map((c) => `${c.id} ${c.result}`).join("; ") || "no criteria";
+      const acc = f.acceptance.note ? `${f.acceptance.state} \u2014 ${f.acceptance.note}` : f.acceptance.state;
+      lines2.push(`  - ${f.slug} [${f.agreed}; ${acc}] ${crit}`);
+      for (const c of f.criteria) if (["missing", "fail", "no test ran"].includes(c.result))
+        for (const o of c.obligations)
+          lines2.push(`      ${c.id}: ${o.selector ? `${o.file}::"${o.selector}"` : o.file} \u2014 ${o.present ? o.current : "not present in the tree"}`);
+    }
+    lines2.push("");
+  }
+  lines2.push("Acceptance is read from this machine's signed ledgers; the ledger has no external anchor, so a removed");
+  lines2.push("trailing entry is noticed only through the signed completion record. --json lists every test obligation.");
+  return lines2.join("\n");
+}
+var ORDER2, worst;
+var init_capabilities = __esm({
+  "src/context/capabilities.mjs"() {
+    init_js_yaml();
+    init_spec_compile();
+    init_spec();
+    init_lock();
+    init_ledger();
+    init_authority();
+    init_attest();
+    init_target();
+    init_gates();
+    init_check_cache();
+    ORDER2 = ["missing", "fail", "no test ran", "index differs from working tree", "receipts disabled", "not run on this version", "pass"];
+    worst = (states) => states.reduce((a, b) => ORDER2.indexOf(a) <= ORDER2.indexOf(b) ? a : b);
+  }
+});
+
+// src/context/store.mjs
+import fs9 from "node:fs";
+import os4 from "node:os";
+import path10 from "node:path";
 import crypto11 from "node:crypto";
 import { execFileSync as execFileSync2 } from "node:child_process";
 async function loadSqlite(env = process.env) {
@@ -3483,35 +4391,35 @@ async function loadSqlite(env = process.env) {
 }
 function worktreeRoot(root) {
   try {
-    return fs8.realpathSync(execFileSync2(
+    return fs9.realpathSync(execFileSync2(
       "git",
       ["rev-parse", "--show-toplevel"],
       { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
     ).trim());
   } catch {
-    return fs8.realpathSync(root);
+    return fs9.realpathSync(root);
   }
 }
 function storePath(root) {
   const top = worktreeRoot(root);
   const key = crypto11.createHash("sha256").update(top).digest("hex").slice(0, 16);
-  return path9.join(stateDir(top), "worktrees", key, "work.db");
+  return path10.join(stateDir(top), "worktrees", key, "work.db");
 }
 function validateExisting(file, sqlite) {
   let size;
   try {
-    size = fs8.statSync(file).size;
+    size = fs9.statSync(file).size;
   } catch (e) {
     throw new WorkError("STORE_UNREADABLE", `${file} cannot be read (${e.code ?? e.message}); it was left untouched.`);
   }
   if (size === 0) throw new WorkError("STORE_UNREADABLE", `${file} is empty (truncated?). It was left untouched; restore it from a \`gatectl work export\`, or move it aside yourself to start over.`);
-  const dir = fs8.mkdtempSync(path9.join(os4.tmpdir(), "gatectl-work-check-"));
+  const dir = fs9.mkdtempSync(path10.join(os4.tmpdir(), "gatectl-work-check-"));
   try {
-    const copy = path9.join(dir, "work.db");
+    const copy = path10.join(dir, "work.db");
     let db;
     try {
-      fs8.copyFileSync(file, copy);
-      if (fs8.existsSync(`${file}-wal`)) fs8.copyFileSync(`${file}-wal`, `${copy}-wal`);
+      fs9.copyFileSync(file, copy);
+      if (fs9.existsSync(`${file}-wal`)) fs9.copyFileSync(`${file}-wal`, `${copy}-wal`);
       db = new sqlite.DatabaseSync(copy);
       const check = db.prepare("PRAGMA quick_check").get();
       if (Object.values(check ?? {})[0] !== "ok") throw new Error(`integrity check: ${JSON.stringify(check)}`);
@@ -3529,7 +4437,7 @@ function validateExisting(file, sqlite) {
       }
     }
   } finally {
-    fs8.rmSync(dir, { recursive: true, force: true });
+    fs9.rmSync(dir, { recursive: true, force: true });
   }
 }
 function transaction(db, fn) {
@@ -3548,12 +4456,12 @@ function transaction(db, fn) {
 }
 function openStore(root, sqlite, { create }) {
   const file = storePath(root);
-  const exists = fs8.existsSync(file);
+  const exists = fs9.existsSync(file);
   if (!exists && orphanCompanion(file))
     throw new WorkError("STORE_UNREADABLE", `${file} is missing but ${orphanCompanion(file)} remains; the store was left untouched.`);
   if (!exists && !create) return null;
   if (exists) validateExisting(file, sqlite);
-  else fs8.mkdirSync(path9.dirname(file), { recursive: true, mode: 448 });
+  else fs9.mkdirSync(path10.dirname(file), { recursive: true, mode: 448 });
   let db;
   try {
     db = new sqlite.DatabaseSync(file);
@@ -3571,7 +4479,7 @@ function openStore(root, sqlite, { create }) {
     if (version < SCHEMA_VERSION2) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION2}`);
   });
   if (!exists) try {
-    fs8.chmodSync(file, 384);
+    fs9.chmodSync(file, 384);
   } catch {
   }
   return db;
@@ -3613,47 +4521,47 @@ var init_store = __esm({
    CREATE INDEX attempts_question ON attempts(question_id);`
     ];
     if (MIGRATIONS.length !== SCHEMA_VERSION2) throw new Error("work store migrations out of step with SCHEMA_VERSION");
-    orphanCompanion = (file) => ["-wal", "-shm", "-journal"].map((s) => file + s).find((f) => fs8.existsSync(f)) ?? null;
+    orphanCompanion = (file) => ["-wal", "-shm", "-journal"].map((s) => file + s).find((f) => fs9.existsSync(f)) ?? null;
   }
 });
 
 // src/context/inputs.mjs
-import fs9 from "node:fs";
-import path10 from "node:path";
+import fs10 from "node:fs";
+import path11 from "node:path";
 import crypto12 from "node:crypto";
 function insideRoot(realRoot, real) {
-  return real === realRoot || real.startsWith(realRoot + path10.sep);
+  return real === realRoot || real.startsWith(realRoot + path11.sep);
 }
 function realLocation(p) {
   for (let hops = 0; hops < 40; hops++) {
     let probe = p;
-    while (!lexists(probe) && probe !== path10.dirname(probe)) probe = path10.dirname(probe);
-    const rest = path10.relative(probe, p);
-    if (fs9.lstatSync(probe).isSymbolicLink()) {
-      p = path10.resolve(path10.dirname(probe), fs9.readlinkSync(probe), rest);
+    while (!lexists(probe) && probe !== path11.dirname(probe)) probe = path11.dirname(probe);
+    const rest = path11.relative(probe, p);
+    if (fs10.lstatSync(probe).isSymbolicLink()) {
+      p = path11.resolve(path11.dirname(probe), fs10.readlinkSync(probe), rest);
       continue;
     }
-    return path10.join(fs9.realpathSync(probe), rest);
+    return path11.join(fs10.realpathSync(probe), rest);
   }
   throw new WorkError("INPUT_OUTSIDE_WORKTREE", `${p} has too many levels of symbolic links`);
 }
 function resolveInput(root, input) {
-  const realRoot = fs9.realpathSync(root);
-  const abs = path10.resolve(realRoot, input);
-  const rel = path10.relative(realRoot, abs);
-  if (!rel || rel.startsWith("..") || path10.isAbsolute(rel))
+  const realRoot = fs10.realpathSync(root);
+  const abs = path11.resolve(realRoot, input);
+  const rel = path11.relative(realRoot, abs);
+  if (!rel || rel.startsWith("..") || path11.isAbsolute(rel))
     throw new WorkError("INPUT_OUTSIDE_WORKTREE", `${input} is not a file inside the worktree ${realRoot}`);
   const real = realLocation(abs);
   if (!insideRoot(realRoot, real))
     throw new WorkError("INPUT_OUTSIDE_WORKTREE", `${input} resolves outside the worktree (${real})`);
-  if (fs9.existsSync(abs) && fs9.statSync(abs).isDirectory())
+  if (fs10.existsSync(abs) && fs10.statSync(abs).isDirectory())
     throw new WorkError("INPUT_IS_DIRECTORY", `${input} is a directory; name the files the conclusion depends on`);
-  return rel.split(path10.sep).join("/");
+  return rel.split(path11.sep).join("/");
 }
 function fingerprint(root, rel) {
-  const file = path10.join(root, rel);
+  const file = path11.join(root, rel);
   try {
-    return `sha256:${crypto12.createHash("sha256").update(fs9.readFileSync(file)).digest("hex")}`;
+    return `sha256:${crypto12.createHash("sha256").update(fs10.readFileSync(file)).digest("hex")}`;
   } catch (e) {
     if (e.code === "ENOENT" || e.code === "ENOTDIR") return "absent";
     if (e.code === "EISDIR") return "unreadable";
@@ -3684,7 +4592,7 @@ var init_inputs = __esm({
     init_store();
     lexists = (p) => {
       try {
-        fs9.lstatSync(p);
+        fs10.lstatSync(p);
         return true;
       } catch {
         return false;
@@ -4058,8 +4966,8 @@ var cli_exports = {};
 __export(cli_exports, {
   runWork: () => runWork
 });
-import fs10 from "node:fs";
-import path11 from "node:path";
+import fs11 from "node:fs";
+import path12 from "node:path";
 import { spawnSync as spawnSync3 } from "node:child_process";
 function parse(args2) {
   const flags = {}, positional = [];
@@ -4084,7 +4992,7 @@ function workId(root, flags) {
   const explicit = flags.work;
   const active = (() => {
     try {
-      return fs10.readFileSync(path11.join(root, "docs/specs/ACTIVE"), "utf8").trim();
+      return fs11.readFileSync(path12.join(root, "docs/specs/ACTIVE"), "utf8").trim();
     } catch {
       return null;
     }
@@ -4095,7 +5003,7 @@ function workId(root, flags) {
 }
 function specGoal(root, id) {
   try {
-    const intent = yaml.load(fs10.readFileSync(path11.join(root, "docs/specs", id, "spec.yaml"), "utf8"))?.intent;
+    const intent = yaml.load(fs11.readFileSync(path12.join(root, "docs/specs", id, "spec.yaml"), "utf8"))?.intent;
     if (typeof intent !== "string" || /^\s*(REPLACE|Зачем сейчас)/.test(intent)) return null;
     const first = intent.trim().split(/\n\s*\n/)[0].replace(/\s+/g, " ");
     return first.length > 300 ? first.slice(0, 299) + "\u2026" : first;
@@ -4143,7 +5051,7 @@ async function runWork(args2, root, env = process.env) {
     if (cmd2 === "import") {
       if (!positional[0]) throw new WorkError("USAGE", "work import needs a file");
       try {
-        importData = JSON.parse(fs10.readFileSync(path11.resolve(positional[0]), "utf8"));
+        importData = JSON.parse(fs11.readFileSync(path12.resolve(positional[0]), "utf8"));
       } catch (e) {
         throw new WorkError("IMPORT_INVALID", `cannot read ${positional[0]}: ${e.message}`);
       }
@@ -4155,7 +5063,7 @@ async function runWork(args2, root, env = process.env) {
       if (code2 !== null) return code2;
       throw new WorkError("SQLITE_UNAVAILABLE", env.GATECTL_WORK_SQLITE === "off" ? "the work store is disabled (GATECTL_WORK_SQLITE=off)" : `node:sqlite is not available on Node ${process.versions.node}; the work store needs Node >= 22.13 (or 22.5+ with --experimental-sqlite). Gates are unaffected.`);
     }
-    if (reading && !fs10.existsSync(file) && !orphanCompanion(file)) {
+    if (reading && !fs11.existsSync(file) && !orphanCompanion(file)) {
       if (cmd2 === "export") {
         console.log(JSON.stringify(emptyExport(), null, 2));
         return 0;
@@ -4273,276 +5181,14 @@ var init_cli = __esm({
 // src/cli/commands.mjs
 init_js_yaml();
 init_target();
-import fs11 from "node:fs";
+init_spec();
+init_spec_compile();
+import fs12 from "node:fs";
 import crypto13 from "node:crypto";
-import path12 from "node:path";
+import path13 from "node:path";
 import { fileURLToPath } from "node:url";
 import os5 from "node:os";
 import { execSync as execSync3, spawnSync as spawnSync4 } from "node:child_process";
-
-// src/core/spec.mjs
-var REQUIRED = ["intent", "invariants", "acceptance_criteria", "allowed_paths", "rollback"];
-function sections(text) {
-  const out = {};
-  const parts = text.split(/^##\s+/m).slice(1);
-  for (const part of parts) {
-    const nl = part.indexOf("\n");
-    const name = part.slice(0, nl).trim().toLowerCase().replace(/\s+/g, "_");
-    out[name] = part.slice(nl + 1).trim();
-  }
-  return out;
-}
-var listItems = (body2) => (body2 ?? "").split(/\r?\n/).filter((l) => l.trim().startsWith("- ")).map((l) => l.trim().slice(2).trim());
-function parseSpec(text) {
-  const sec = sections(text);
-  const state = /^state:\s*([A-Z_]+)/m.exec(text)?.[1] ?? null;
-  const mvpRef = /^mvp_ref:\s*(\S+)/m.exec(text)?.[1] ?? null;
-  const intent = sec.intent ?? "";
-  const invariants = listItems(sec.invariants);
-  const acceptanceCriteria = listItems(sec.acceptance_criteria);
-  const allowedPaths = listItems(sec.allowed_paths).map((s) => s.replace(/^`|`$/g, ""));
-  const rollback = sec.rollback ?? "";
-  const requiredTests = [];
-  const testObligations = [];
-  const acceptanceCriteriaWithoutTests = [];
-  for (const ac of acceptanceCriteria) {
-    const m = /—\s*required:\s*(.+)$/.exec(ac);
-    if (!m) {
-      acceptanceCriteriaWithoutTests.push(ac);
-      continue;
-    }
-    const id = /^([A-Za-z]+[-_]?\d+)/.exec(ac)?.[1] ?? null;
-    for (const raw of m[1].match(/(?:"[^"]*"|'[^']*'|[^,])+/g) ?? []) {
-      const entry = raw.trim();
-      if (!entry) continue;
-      const sep = entry.indexOf("::");
-      const file = (sep === -1 ? entry : entry.slice(0, sep)).trim().replace(/^`|`$/g, "");
-      const selector = sep === -1 ? null : entry.slice(sep + 2).trim().replace(/^["']|["']$/g, "");
-      if (!requiredTests.includes(file)) requiredTests.push(file);
-      testObligations.push({ ac: id, file, selector: selector || null });
-    }
-  }
-  const blockingQuestions = [...text.matchAll(/^BLOCKING:\s*(.+)$/gm)].map((m) => m[1].trim());
-  const missingSections = REQUIRED.filter((name) => {
-    const v = { intent, invariants, acceptance_criteria: acceptanceCriteria, allowed_paths: allowedPaths, rollback }[name];
-    return Array.isArray(v) ? v.length === 0 : !v;
-  });
-  if (!mvpRef) missingSections.push("mvp_ref");
-  return {
-    state,
-    mvpRef,
-    intent,
-    invariants,
-    acceptanceCriteria,
-    requiredTests,
-    testObligations,
-    acceptanceCriteriaWithoutTests,
-    allowedPaths,
-    rollback,
-    blockingQuestions,
-    missingSections
-  };
-}
-
-// src/core/spec-compile.mjs
-import crypto4 from "node:crypto";
-
-// src/core/attest.mjs
-import crypto3 from "node:crypto";
-function canonical(value) {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object")
-    return `{${Object.keys(value).sort().filter((k) => k !== "mac" && k !== "sig" && value[k] !== void 0).map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`).join(",")}}`;
-  return JSON.stringify(value ?? null);
-}
-var sign = (att, key) => crypto3.createHmac("sha256", key).update(canonical(att)).digest("hex");
-function environment({ versions = process.versions, platform = process.platform, arch = process.arch, commands = {} }) {
-  const env = {
-    node: versions.node ?? null,
-    platform,
-    arch,
-    // The commands themselves, not their output: a green earned with `test_all: "true"` and one
-    // earned with a real suite must not look alike in the record.
-    commands: Object.fromEntries(Object.entries(commands).filter(([, v]) => v !== void 0).sort())
-  };
-  return { ...env, digest: crypto3.createHash("sha256").update(canonical(env)).digest("hex").slice(0, 16) };
-}
-var signAttestation = (att, key) => ({ ...att, mac: sign(att, key) });
-function signIssued(att, privateKey) {
-  const body2 = { ...att, alg: "ed25519" };
-  delete body2.sig;
-  return { ...body2, sig: crypto3.sign(null, Buffer.from(canonical(body2)), privateKey).toString("base64") };
-}
-function verifyIssued(att, publicKey) {
-  if (!att || att.alg !== "ed25519" || typeof att.sig !== "string") return false;
-  const body2 = { ...att };
-  delete body2.sig;
-  try {
-    return crypto3.verify(null, Buffer.from(canonical(body2)), publicKey, Buffer.from(att.sig, "base64"));
-  } catch {
-    return false;
-  }
-}
-function checkIssued({ att, tree, sha, specDigest: specDigest2, policyDigest: policyDigest2 }) {
-  const reasons = [];
-  const commit = att.commit ?? att.head_sha;
-  const issuedTree = att.tree ?? att.tree_oid;
-  const policy = att.policy_digest ?? att.trusted_policy?.digest;
-  if (commit !== sha) reasons.push(`issued for commit ${String(commit).slice(0, 12)}\u2026, not ${sha.slice(0, 12)}\u2026`);
-  if (issuedTree !== tree) reasons.push(`attested tree ${String(issuedTree).slice(0, 12)}\u2026 is not this commit's tree ${tree.slice(0, 12)}\u2026`);
-  const noSpec = att.spec_digest === null || /^0{64}$/.test(String(att.spec_digest));
-  if (specDigest2 === null ? !noSpec : att.spec_digest !== specDigest2)
-    reasons.push("the spec at this commit is not the spec the issuer judged");
-  if (policy !== policyDigest2) reasons.push("the policy at this commit is not the policy the issuer judged under");
-  return { ok: reasons.length === 0, reasons };
-}
-function verifySignature(att, key) {
-  if (!att || typeof att.mac !== "string") return false;
-  const expected = Buffer.from(sign(att, key), "hex");
-  const actual = Buffer.from(att.mac, "hex");
-  return expected.length === actual.length && crypto3.timingSafeEqual(expected, actual);
-}
-function checkAttestation({ att, key, tree, specDigest: specDigest2, policyDigest: policyDigest2, requires, skipSignature = false }) {
-  if (!att) return { ok: false, reasons: ["no attestation"] };
-  if (!skipSignature && !verifySignature(att, key))
-    return { ok: false, reasons: ["signature does not verify \u2014 wrong key, or the attestation was edited"] };
-  const reasons = [];
-  if (att.tree !== tree) reasons.push(`attested tree ${String(att.tree).slice(0, 12)}\u2026 is not this commit's tree ${tree.slice(0, 12)}\u2026`);
-  if (att.spec_digest !== specDigest2) reasons.push("the spec at this commit is not the spec that was gated");
-  if (att.policy_digest !== policyDigest2) reasons.push("the policy at this commit is not the policy that was gated");
-  if (requires) {
-    const attested = new Set(att.gates?.filter((g) => g.status === "PASS").map((g) => g.gate) ?? []);
-    for (const gate of requires) if (!attested.has(gate)) reasons.push(`gate ${gate} is required by this commit's policy but not attested green`);
-  }
-  return { ok: reasons.length === 0, reasons };
-}
-
-// src/core/spec-compile.mjs
-var ID = /^[A-Z]{2,4}-\d{2,3}$/;
-var REQUIRED2 = ["id", "state", "mvp_ref", "intent", "invariants", "acceptance_criteria", "allowed_paths", "rollback"];
-var STATES = ["DRAFT", "SPEC_REVIEWED", "LOCKED", "RED_PROVEN", "IMPLEMENTING", "GREEN", "REVIEWED", "VERIFIED", "COMPLETED"];
-var isNonEmptyString = (v) => typeof v === "string" && v.trim().length > 0;
-function validateSpec(spec) {
-  const errors = [];
-  if (!spec || typeof spec !== "object") return { ok: false, errors: ["spec is not a mapping"] };
-  for (const key of REQUIRED2) if (spec[key] === void 0) errors.push(`missing: ${key}`);
-  if (spec.state !== void 0 && !STATES.includes(spec.state))
-    errors.push(`state must be one of ${STATES.join(", ")} \u2014 got ${JSON.stringify(spec.state)}`);
-  if (spec.id !== void 0 && !isNonEmptyString(spec.id)) errors.push("id must be a non-empty string");
-  if (spec.intent !== void 0 && !isNonEmptyString(spec.intent)) errors.push("intent must be a non-empty string");
-  const list = (name) => Array.isArray(spec[name]) ? spec[name] : [];
-  if (spec.invariants !== void 0 && !Array.isArray(spec.invariants)) errors.push("invariants must be a list");
-  if (spec.acceptance_criteria !== void 0 && !Array.isArray(spec.acceptance_criteria))
-    errors.push("acceptance_criteria must be a list");
-  if (spec.allowed_paths !== void 0 && (!Array.isArray(spec.allowed_paths) || spec.allowed_paths.length === 0))
-    errors.push("allowed_paths must be a non-empty list \u2014 a feature that may touch anything has no scope");
-  if (spec.verification !== void 0 && spec.verification !== "policy") errors.push("verification must be policy when provided");
-  const seenIds = /* @__PURE__ */ new Set();
-  const seenTests = /* @__PURE__ */ new Map();
-  list("invariants").forEach((inv, i) => {
-    if (!isNonEmptyString(inv?.id)) errors.push(`invariants[${i}].id must be a non-empty string`);
-    else if (!ID.test(inv.id)) errors.push(`invariants[${i}].id "${inv.id}" is not of the form INV-01`);
-    else if (seenIds.has(inv.id)) errors.push(`duplicate id: ${inv.id}`);
-    else seenIds.add(inv.id);
-    if (!isNonEmptyString(inv?.statement)) errors.push(`invariants[${i}].statement must be a non-empty string`);
-  });
-  if (Array.isArray(spec.acceptance_criteria) && spec.acceptance_criteria.length === 0)
-    errors.push("acceptance_criteria must not be empty \u2014 a feature that promises nothing cannot be delivered");
-  list("acceptance_criteria").forEach((ac, i) => {
-    if (!isNonEmptyString(ac?.id)) errors.push(`acceptance_criteria[${i}].id must be a non-empty string`);
-    else if (!ID.test(ac.id)) errors.push(`acceptance_criteria[${i}].id "${ac.id}" is not of the form AC-01`);
-    else if (seenIds.has(ac.id)) errors.push(`duplicate id: ${ac.id}`);
-    else seenIds.add(ac.id);
-    if (!isNonEmptyString(ac?.statement)) errors.push(`acceptance_criteria[${i}].statement must be a non-empty string`);
-    if (!ac?.test && spec.verification === "policy") return;
-    if (!ac?.test || typeof ac.test !== "object") {
-      errors.push(`acceptance_criteria[${i}] (${ac?.id ?? "?"}) names no test \u2014 every criterion must be provable`);
-      return;
-    }
-    if (!isNonEmptyString(ac.test.file)) errors.push(`acceptance_criteria[${i}].test.file must be a non-empty string`);
-    if (ac.test.selector !== void 0 && !isNonEmptyString(ac.test.selector))
-      errors.push(`acceptance_criteria[${i}].test.selector must be a non-empty string when present`);
-    const key = `${ac.test.file}::${ac.test.selector ?? ""}`;
-    if (seenTests.has(key)) errors.push(`${ac.id ?? `acceptance_criteria[${i}]`} and ${seenTests.get(key)} name the same test case: ${key}`);
-    else seenTests.set(key, ac.id ?? `acceptance_criteria[${i}]`);
-  });
-  if (spec.blocking_questions !== void 0) {
-    if (!Array.isArray(spec.blocking_questions)) errors.push("blocking_questions must be a list");
-    else spec.blocking_questions.forEach((q, i) => {
-      if (!isNonEmptyString(q)) errors.push(`blocking_questions[${i}] must be a non-empty string`);
-    });
-  }
-  if (spec.rollback !== void 0 && !isNonEmptyString(spec.rollback?.strategy))
-    errors.push("rollback.strategy must be a non-empty string \u2014 how this is undone is part of the promise");
-  return { ok: errors.length === 0, errors };
-}
-function obligations(spec) {
-  return (spec.acceptance_criteria ?? []).filter((ac) => ac.test).map((ac) => ({
-    criterion: ac.id,
-    statement: ac.statement,
-    file: ac.test.file,
-    selector: ac.test.selector ?? null,
-    // Named per obligation rather than assumed globally: a criterion may legitimately be proven
-    // by a test that fails to compile before the change (a missing export), and that is a
-    // different RED from an assertion. Default stays the strict one.
-    expected_red: ac.test.expected_red ?? "assertion"
-  }));
-}
-function compileSpec(spec) {
-  const check = validateSpec(spec);
-  if (!check.ok) return { ok: false, errors: check.errors };
-  const compiled = {
-    ...spec.verification === "policy" ? { verification: "policy" } : {},
-    id: spec.id,
-    state: spec.state,
-    mvp_ref: spec.mvp_ref,
-    intent: spec.intent.trim(),
-    invariants: spec.invariants.map((i) => ({ id: i.id, statement: i.statement.trim() })),
-    acceptance_criteria: spec.acceptance_criteria.map((ac) => ({
-      id: ac.id,
-      statement: ac.statement.trim(),
-      ...ac.test ? { test: { file: ac.test.file, selector: ac.test.selector ?? null, expected_red: ac.test.expected_red ?? "assertion" } } : {}
-    })),
-    allowed_paths: [...spec.allowed_paths],
-    rollback: { strategy: spec.rollback.strategy, notes: spec.rollback.notes ?? null },
-    // Part of the compiled form, and therefore part of the digest: answering a blocking question
-    // changes the spec, and everything bound to the old digest goes stale, as it should.
-    blocking_questions: [...spec.blocking_questions ?? []]
-  };
-  const text = canonical(compiled);
-  return {
-    ok: true,
-    compiled,
-    obligations: obligations(compiled),
-    digest: crypto4.createHash("sha256").update(text).digest("hex"),
-    canonical: text
-  };
-}
-function specFromCompiled(compiled) {
-  const requiredTests = [];
-  for (const ac of compiled.acceptance_criteria) if (ac.test && !requiredTests.includes(ac.test.file)) requiredTests.push(ac.test.file);
-  return {
-    state: compiled.state,
-    mvpRef: compiled.mvp_ref,
-    intent: compiled.intent,
-    invariants: compiled.invariants.map((i) => `${i.id} ${i.statement}`),
-    acceptanceCriteria: compiled.acceptance_criteria.map((ac) => `${ac.id} ${ac.statement}`),
-    requiredTests,
-    testObligations: compiled.acceptance_criteria.filter((ac) => ac.test).map((ac) => ({
-      ac: ac.id,
-      file: ac.test.file,
-      selector: ac.test.selector,
-      expectedRed: ac.test.expected_red
-    })),
-    // The compiler refuses a criterion without a test, so this is empty by construction rather
-    // than by luck. Gate L still checks it: one place to look when the rule changes.
-    acceptanceCriteriaWithoutTests: compiled.acceptance_criteria.filter((ac) => !ac.test).map((ac) => ac.id),
-    allowedPaths: [...compiled.allowed_paths],
-    rollback: compiled.rollback.strategy,
-    blockingQuestions: [...compiled.blocking_questions ?? []],
-    missingSections: []
-  };
-}
 
 // src/core/critique.mjs
 var ARCHIVE_MARKER = "## Answered in earlier rounds";
@@ -4636,109 +5282,16 @@ function renderCritiqueFile({ slug, provider, model, prior, newText, round, hist
   return out.join("\n") + "\n";
 }
 
-// src/core/tier.mjs
-function globToRegExp(glob) {
-  const re = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*\//g, "").replace(/\*\*/g, "").replace(/\*/g, "[^/]*").replace(/\u0001/g, "(?:.*/)?").replace(/\u0002/g, ".*");
-  return new RegExp(`^${re}$`);
-}
-function matchesAny(path13, globs) {
-  return (globs ?? []).some((g) => globToRegExp(g).test(path13));
-}
-var ORDER = ["A", "B", "C"];
-function tierOf(changedPaths2, policy) {
-  const fallback = policy.unmatched_tier ?? "A";
-  if (!ORDER.includes(fallback))
-    throw new TypeError(`policy.unmatched_tier names an unknown tier: "${fallback}"`);
-  let highest = 2;
-  let any = false;
-  for (const p of changedPaths2) {
-    const idx = ORDER.findIndex((t) => matchesAny(p, policy.tiers?.[t]?.paths));
-    const eff = idx === -1 ? ORDER.indexOf(fallback) : idx;
-    if (!any || eff < highest) highest = eff;
-    any = true;
-  }
-  return any ? ORDER[highest] : fallback;
-}
-function higherTier(a, b) {
-  const ia = ORDER.indexOf(a);
-  const ib = ORDER.indexOf(b);
-  if (ia === -1) throw new TypeError(`unknown tier: "${a}"`);
-  if (ib === -1) throw new TypeError(`unknown tier: "${b}"`);
-  return ORDER[Math.min(ia, ib)];
-}
-function effectiveTier(allowedPaths, changedPaths2, policy) {
-  const declared = tierOf(allowedPaths, policy);
-  if (!changedPaths2 || changedPaths2.length === 0) return declared;
-  return higherTier(declared, tierOf(changedPaths2, policy));
-}
-function shippedPaths(changed, specDir, metaClass = []) {
-  const engine = ["spec.md", "spec.yaml", "critique.md", "spec.lock.json"].map((name) => `${specDir}/${name}`).concat("docs/specs/ACTIVE", metaClass);
-  return (changed ?? []).filter((p) => !matchesAny(p, engine));
-}
-
 // src/cli/commands.mjs
+init_tier();
 init_paths();
-
-// src/core/lock.mjs
-import { createHash } from "node:crypto";
-var specDigest = (text) => createHash("sha256").update(text, "utf8").digest("hex");
-function appendLock(locks, entry) {
-  const prev = locks[locks.length - 1];
-  if (prev && prev.digest === entry.digest) return locks;
-  return [...locks, { version: locks.length + 1, ...entry }];
-}
-var latestLock = (locks) => locks[locks.length - 1] ?? null;
-
-// src/core/ledger.mjs
-import fs3 from "node:fs";
-import path4 from "node:path";
-import crypto5 from "node:crypto";
-var mac = (key, payload) => crypto5.createHmac("sha256", key).update(payload).digest("hex");
-var body = (entry, prev) => JSON.stringify({ entry, prev });
-function appendEntry(ledgerPath, entry, key) {
-  const prev = fs3.existsSync(ledgerPath) ? lastMac(ledgerPath) : "";
-  fs3.mkdirSync(path4.dirname(ledgerPath), { recursive: true });
-  fs3.appendFileSync(ledgerPath, JSON.stringify({ entry, prev, mac: mac(key, body(entry, prev)) }) + "\n");
-}
-function lines(ledgerPath) {
-  return fs3.readFileSync(ledgerPath, "utf8").split("\n").filter((l) => l.trim());
-}
-function lastMac(ledgerPath) {
-  const all = lines(ledgerPath);
-  if (all.length === 0) return "";
-  try {
-    return JSON.parse(all[all.length - 1]).mac ?? "";
-  } catch {
-    return "";
-  }
-}
-function readLedger(ledgerPath, key) {
-  if (!fs3.existsSync(ledgerPath)) return { ok: true, entries: [], head: "" };
-  const entries = [];
-  let prev = "";
-  let i = 0;
-  for (const raw of lines(ledgerPath)) {
-    i += 1;
-    let line;
-    try {
-      line = JSON.parse(raw);
-    } catch {
-      return { ok: false, entries: [], head: "", detail: `entry ${i} is not valid JSON` };
-    }
-    if (line.prev !== prev)
-      return { ok: false, entries: [], head: "", detail: `entry ${i} breaks the chain \u2014 an entry was edited, deleted or reordered` };
-    if (line.mac !== mac(key, body(line.entry, line.prev)))
-      return { ok: false, entries: [], head: "", detail: `entry ${i} does not match its signature \u2014 the ledger was modified outside gatectl, or signed with another key` };
-    entries.push(line.entry);
-    prev = line.mac;
-  }
-  return { ok: true, entries, head: prev };
-}
-
-// src/cli/commands.mjs
+init_lock();
+init_ledger();
 init_authority();
+init_attest();
 
 // src/core/envelope.mjs
+init_attest();
 import crypto6 from "node:crypto";
 var SCHEMA_VERSION = 1;
 var SHA1 = /^[0-9a-f]{40}$/;
@@ -4810,187 +5363,8 @@ function crossCheck({ envelope: e, context, git: git2 }) {
   return { ok: reasons.length === 0, reasons };
 }
 
-// src/core/gates.mjs
-var SEVERE = /* @__PURE__ */ new Set(["critical", "high"]);
-function gateL({ spec, critique, tier, policy, mvp }) {
-  const reasons = [];
-  if (spec.missingSections.length) reasons.push(`missing sections: ${spec.missingSections.join(", ")}`);
-  if (spec.blockingQuestions.length) reasons.push(`open BLOCKING questions: ${spec.blockingQuestions.length}`);
-  if ((policy.tiers?.[tier]?.requires ?? ["R"]).includes("R") && spec.acceptanceCriteriaWithoutTests.length)
-    reasons.push(`acceptance criteria naming no required test: ${spec.acceptanceCriteriaWithoutTests.length}`);
-  if (spec.mvpRef && spec.mvpRef !== "maintenance") {
-    const known = (mvp?.mvp_done_when ?? []).some((e) => e.id === spec.mvpRef);
-    if (!known) reasons.push(`mvp_ref "${spec.mvpRef}" not found in .gatectl/MVP.yaml mvp_done_when`);
-  }
-  const critiqueRequired = policy.critic === void 0 ? true : (policy.critic.required_for_tiers ?? []).includes(tier);
-  const hasCritique = !!critique && Array.isArray(critique.findings) && critique.findings.length > 0;
-  if (hasCritique) {
-    const open = critique.findings.filter((f) => SEVERE.has(f.severity) && !f.resolved);
-    if (open.length) reasons.push(`unresolved critical/high findings: ${open.length}`);
-  } else if (critiqueRequired) {
-    if (reasons.length)
-      return { status: "FAIL", reasons: [...reasons, "critique also absent/empty \u2014 not evaluated"] };
-    return {
-      status: "NOT_EVALUATED",
-      reasons: [...reasons, "critique absent or recorded zero findings \u2014 a critique that finds nothing is not approval"]
-    };
-  }
-  return { status: reasons.length ? "FAIL" : "PASS", reasons };
-}
-function classifyFailure(output, policy) {
-  const classes = policy.failure_classes ?? {};
-  for (const [name, patterns] of [["load", classes.load ?? []], ["empty", classes.empty ?? []], ["assertion", classes.assertion ?? []]])
-    if (patterns.some((p) => new RegExp(p, "im").test(output))) return name;
-  return "unknown";
-}
-function gateR({ obligations: obligations2, run, caseCommand = false }, policy) {
-  if (!obligations2?.length)
-    return { status: "NOT_EVALUATED", reasons: ["spec names no required tests"], perTest: [] };
-  const perTest = [];
-  const failReasons = [];
-  const neReasons = [];
-  const canDetectEmpty = (policy.failure_classes?.empty ?? []).length > 0;
-  for (const o of obligations2) {
-    const label = o.selector ? `${o.file}::"${o.selector}"` : o.file;
-    if (o.selector && !caseCommand) {
-      perTest.push({ ...o, verdict: "no-case-command" });
-      neReasons.push(`${label}: the spec names a case but policy has no test_case command \u2014 running the whole file would prove something else`);
-      continue;
-    }
-    const r = run(o);
-    const kind = classifyFailure(r.output, policy);
-    if (kind === "empty") {
-      perTest.push({ ...o, verdict: "empty" });
-      neReasons.push(`${label}: the runner executed no matching test \u2014 a case that never ran is not RED`);
-      continue;
-    }
-    if (r.code === 0) {
-      perTest.push({ ...o, verdict: "passes" });
-      const ambiguous = o.selector && !canDetectEmpty;
-      failReasons.push(ambiguous ? `${label} exited 0 \u2014 either the case already passes, or the runner matched nothing; policy defines no failure_classes.empty patterns, so gatectl cannot tell which` : `${label} already passes \u2014 nothing to implement against`);
-      continue;
-    }
-    perTest.push({ ...o, verdict: kind });
-    if (kind === "load" || kind === "unknown") neReasons.push(`${label}: ${kind} failure is NOT_EVALUATED, never RED`);
-  }
-  if (failReasons.length) return { status: "FAIL", reasons: [...failReasons, ...neReasons], perTest };
-  if (neReasons.length) return { status: "NOT_EVALUATED", reasons: neReasons, perTest };
-  return { status: "PASS", reasons: [], perTest };
-}
-function diffChecks({ changed, diffText, allowedPaths, specDir, metaClass, verifiedArtifacts = [] }) {
-  const reasons = [];
-  const bookkeeping = [`${specDir}/spec.md`, `${specDir}/spec.yaml`, `${specDir}/critique.md`, "docs/specs/ACTIVE"];
-  for (const p of changed) {
-    if (p === `${specDir}/spec.lock.json` && verifiedArtifacts.includes(p)) continue;
-    if (matchesAny(p, metaClass)) {
-      reasons.push(`meta-class file touched: ${p}`);
-      continue;
-    }
-    if (bookkeeping.includes(p)) continue;
-    if (!matchesAny(p, allowedPaths)) reasons.push(`changed outside allowed_paths: ${p}`);
-  }
-  const deleted = [...diffText.matchAll(/^diff --git a\/(\S+) b\/\S+\r?\ndeleted file/gm)].map((m) => m[1]);
-  for (const p of deleted) if (/\.(test|spec)\./.test(p)) reasons.push(`test file deleted: ${p}`);
-  let currentFile = null;
-  for (const line of diffText.split("\n")) {
-    const fileMatch = line.match(/^diff --git a\/(\S+) b\//);
-    if (fileMatch) currentFile = fileMatch[1];
-    if (line.startsWith("+") && currentFile && /\.(test|spec)\./.test(currentFile)) {
-      if (/\b(?:it|describe|test|suite)\s*\.\s*(only|skip)\s*\(/.test(line))
-        reasons.push(`added ${line.includes(".only") ? ".only" : ".skip"} in: ${line.trim().slice(0, 80)}`);
-    }
-  }
-  return reasons;
-}
-var DECLARED_ABSENT = "none";
-function excerpt(text, { head = 12, tail = 12 } = {}) {
-  const lines2 = text.replace(/\s+$/, "").split("\n");
-  if (lines2.length <= head + tail) return lines2.join("\n");
-  const omitted = lines2.length - head - tail;
-  return [...lines2.slice(0, head), `\u2026 ${omitted} more line(s) omitted \u2026`, ...lines2.slice(-tail)].join("\n");
-}
-function diagnostics(r) {
-  const parts = [];
-  const out = (r.stdout ?? "").trim();
-  const err = (r.stderr ?? "").trim();
-  if (out) parts.push(`stdout:
-${excerpt(out)}`);
-  if (err) parts.push(`stderr:
-${excerpt(err)}`);
-  if (!parts.length && (r.output ?? "").trim()) parts.push(excerpt(r.output.trim()));
-  return parts.length ? parts.join("\n") : "(no output)";
-}
-function runSteps(run, steps) {
-  const reasons = [];
-  const skipped = [];
-  for (const [name, cmd2, subst] of steps) {
-    if (cmd2 === DECLARED_ABSENT) {
-      skipped.push(name);
-      continue;
-    }
-    if (!cmd2) return { notEvaluated: `policy has no command for ${name}`, reasons, skipped };
-    const r = run(cmd2, subst ?? {});
-    if (r.code !== 0) reasons.push(`${name} failed (exit ${r.code}):
-${diagnostics(r)}`);
-  }
-  return { reasons, skipped };
-}
-function gateGfast({ run, policy, changed }) {
-  if (changed.length === 0) return { status: "NOT_EVALUATED", reasons: ["empty diff \u2014 nothing to gate"] };
-  const testFiles = changed.filter((p) => /\.(test|spec)\./.test(p));
-  const srcFiles = changed.filter((p) => !testFiles.includes(p));
-  const { notEvaluated, reasons, skipped } = runSteps(run, [
-    ["typecheck", policy.commands?.typecheck],
-    ["related tests", policy.commands?.test_related, { files: [...srcFiles, ...testFiles] }]
-  ]);
-  if (notEvaluated) return { status: "NOT_EVALUATED", reasons: [notEvaluated], skipped };
-  return { status: reasons.length ? "FAIL" : "PASS", reasons, skipped };
-}
-function gateGfull({ run, policy, changed, diffText, spec, specDir, verifiedArtifacts = [] }) {
-  if (changed.length === 0) return { status: "NOT_EVALUATED", reasons: ["empty diff \u2014 nothing to gate"] };
-  const { notEvaluated, reasons, skipped } = runSteps(run, [
-    ["typecheck", policy.commands?.typecheck],
-    ["build", policy.commands?.build],
-    ["full suite", policy.commands?.test_all]
-  ]);
-  if (notEvaluated) return { status: "NOT_EVALUATED", reasons: [notEvaluated], skipped };
-  reasons.push(...diffChecks({ changed, diffText, allowedPaths: spec.allowedPaths, specDir, metaClass: policy.meta_class ?? [], verifiedArtifacts }));
-  return { status: reasons.length ? "FAIL" : "PASS", reasons, skipped };
-}
-var TREE_BOUND = /* @__PURE__ */ new Set(["Gfast", "Gfull", "X"]);
-function gateC({ results, requires, digest, tree, tests, drift = [], blockers = [] }) {
-  const reasons = [...blockers];
-  if (drift.length)
-    reasons.push(`working tree has drifted from the index \u2014 the gates ran against content this commit will not carry: ${drift.join(", ")}`);
-  for (const gate of requires) {
-    const latest = [...results].reverse().find((r) => r.gate === gate);
-    if (!latest) {
-      reasons.push(`gate ${gate} never ran for this feature`);
-      continue;
-    }
-    if (typeof latest.digest !== "string") {
-      reasons.push(`gate ${gate} has a malformed ledger entry`);
-      continue;
-    }
-    if (latest.digest !== digest) {
-      reasons.push(`gate ${gate} is green for a stale digest (${latest.digest.slice(0, 8)}\u2026)`);
-      continue;
-    }
-    if (TREE_BOUND.has(gate)) {
-      if (tree !== void 0 && latest.tree !== tree) {
-        reasons.push(`gate ${gate} is green for a stale tree`);
-        continue;
-      }
-    } else if (gate === "R") {
-      if (tests !== void 0 && latest.tests !== tests) {
-        reasons.push(`gate ${gate} is green for stale required tests`);
-        continue;
-      }
-    }
-    if (latest.status !== "PASS") reasons.push(`gate ${gate} is ${latest.status}`);
-  }
-  return { status: reasons.length ? "FAIL" : "PASS", reasons };
-}
+// src/cli/commands.mjs
+init_gates();
 
 // src/core/review.mjs
 import crypto7 from "node:crypto";
@@ -5412,10 +5786,10 @@ function resolveMemoryConfig({ policy, env = {}, repoName }) {
     }
   };
 }
-async function post({ config, fetchImpl, path: path13, body: body2, timeoutMs }) {
+async function post({ config, fetchImpl, path: path14, body: body2, timeoutMs }) {
   let response;
   try {
-    response = await fetchImpl(`${config.endpoint}${path13}`, {
+    response = await fetchImpl(`${config.endpoint}${path14}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
@@ -5428,17 +5802,17 @@ async function post({ config, fetchImpl, path: path13, body: body2, timeoutMs })
   } catch (e) {
     const c = e.cause;
     const reason = c?.message || c?.code || c?.errors?.[0]?.message || "";
-    return { ok: false, detail: `${config.endpoint}${path13}: ${e.message}${reason ? ` (${reason})` : ""}` };
+    return { ok: false, detail: `${config.endpoint}${path14}: ${e.message}${reason ? ` (${reason})` : ""}` };
   }
-  if (!response.ok) return { ok: false, detail: `${path13}: HTTP ${response.status}` };
+  if (!response.ok) return { ok: false, detail: `${path14}: HTTP ${response.status}` };
   let envelope;
   try {
     envelope = await response.json();
   } catch (e) {
-    return { ok: false, detail: `${path13}: unreadable response (${e.message})` };
+    return { ok: false, detail: `${path14}: unreadable response (${e.message})` };
   }
   if (envelope?.code !== 0)
-    return { ok: false, detail: `${path13}: code ${envelope?.code} \u2014 ${envelope?.message ?? "no message"}` };
+    return { ok: false, detail: `${path14}: code ${envelope?.code} \u2014 ${envelope?.message ?? "no message"}` };
   return { ok: true, data: envelope.data ?? {} };
 }
 async function ensureWiki({ config, fetchImpl, timeoutMs }) {
@@ -5484,6 +5858,7 @@ async function readPages({ config, fetchImpl, refs }) {
 }
 
 // src/core/detect.mjs
+init_tier();
 var LOCKFILES = [
   ["pnpm-lock.yaml", "pnpm"],
   ["yarn.lock", "yarn"],
@@ -5877,80 +6252,7 @@ function reminderSignature(root, session) {
 
 // src/cli/commands.mjs
 init_goal();
-
-// src/core/check-cache.mjs
-init_target();
-init_authority();
-import fs7 from "node:fs";
-import path8 from "node:path";
-import crypto10 from "node:crypto";
-var hash = (value) => crypto10.createHash("sha256").update(canonical(value)).digest("hex");
-function executionContext(root, policy, env = process.env) {
-  const deps = [], seen = /* @__PURE__ */ new Set();
-  function walk(file, resolved) {
-    let real, s;
-    if (resolved === void 0) {
-      if (!fs7.existsSync(file)) return;
-      real = fs7.realpathSync(file);
-      s = fs7.statSync(real);
-    } else {
-      try {
-        s = fs7.lstatSync(resolved);
-      } catch {
-        return;
-      }
-      real = resolved;
-      if (s.isSymbolicLink()) {
-        if (!fs7.existsSync(resolved)) return;
-        real = fs7.realpathSync(resolved);
-        s = fs7.statSync(real);
-      }
-    }
-    if (seen.has(real)) return;
-    seen.add(real);
-    deps.push([file, real, s.size, s.mtimeMs, s.ctimeMs, s.mode]);
-    if (s.isDirectory()) for (const name of fs7.readdirSync(real).sort())
-      walk(path8.join(file, name), path8.join(real, name));
-  }
-  for (const dir of policy.workflow?.dependency_paths ?? ["node_modules", ".venv"]) walk(path8.resolve(root, dir));
-  for (const file of policy.workflow?.input_paths ?? [".env", ".env.local", ".env.test", ".env.test.local", ".env.production", ".env.production.local"]) walk(path8.resolve(root, file));
-  return hash({ policy, deps, env: childEnv(env, policy.commands?.env_allow ?? []), runtime: process.versions, platform: process.platform, arch: process.arch });
-}
-function cachedRunner(root, policy, { fresh = false, execute = runCmd, announce = console.log } = {}) {
-  const executed = /* @__PURE__ */ new Set();
-  const enabled = !!policy.workflow && policy.workflow.cache !== false;
-  return (command, subst = {}) => {
-    if (!enabled) return execute(root, command, subst, { allow: policy.commands?.env_allow ?? [] });
-    if (indexDrift(root).length) return { code: 2, output: "Stage the intended candidate before checking: working tree differs from index." };
-    const before = treeDigest(root), context = executionContext(root, policy);
-    const argv = commandArgv(command, subst);
-    const executable = argv[0].includes("/") ? path8.resolve(root, argv[0]) : (process.env.PATH ?? "").split(path8.delimiter).map((p) => path8.join(p, argv[0])).find((p) => fs7.existsSync(p));
-    const stat = executable && fs7.existsSync(executable) ? fs7.statSync(executable) : null;
-    const id = hash({ before, context, argv, executable, executableStat: stat && [stat.size, stat.mtimeMs, stat.ctimeMs] });
-    const key = loadKey(root);
-    if (!key.ok) throw new Error(key.detail);
-    const file = path8.join(stateDir(root), "checks", id + ".json");
-    if ((!fresh || executed.has(id)) && fs7.existsSync(file)) {
-      try {
-        const saved = JSON.parse(fs7.readFileSync(file, "utf8"));
-        if (verifySignature(saved, key.key) && saved.id === id && saved.result.code === 0) {
-          announce(`  reused check: ${argv.join(" ")}`);
-          return saved.result;
-        }
-      } catch {
-      }
-    }
-    const result2 = execute(root, command, subst, { allow: policy.commands?.env_allow ?? [] });
-    if (indexDrift(root).length || treeDigest(root) !== before || executionContext(root, policy) !== context)
-      return { code: 1, output: "Candidate or execution environment changed during the check; rerun on stable inputs." };
-    fs7.mkdirSync(path8.dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.tmp`;
-    fs7.writeFileSync(tmp, JSON.stringify(signAttestation({ id, result: result2, at: (/* @__PURE__ */ new Date()).toISOString() }, key.key)), { mode: 384 });
-    fs7.renameSync(tmp, file);
-    executed.add(id);
-    return result2;
-  };
-}
+init_check_cache();
 
 // src/core/workflow.mjs
 var COMMAND_NAMES = { lock: "spec-check", red: "test-red", green: "test-green", "gate fast": "check", "gate full": "check-all", "gate x": "review-check", "commit-check": "ready-to-commit", complete: "finish" };
@@ -6067,28 +6369,29 @@ function nextStep({ feature, spec, digest, tree, tests, results = [], requires =
 }
 
 // src/cli/commands.mjs
+init_tier();
 var PACKAGE_ROOT = fileURLToPath(new URL(true ? "../" : "../../", import.meta.url));
-var TEMPLATES = path12.join(PACKAGE_ROOT, "templates");
-var VERSION = JSON.parse(fs11.readFileSync(path12.join(PACKAGE_ROOT, "package.json"), "utf8")).version;
+var TEMPLATES = path13.join(PACKAGE_ROOT, "templates");
+var VERSION = JSON.parse(fs12.readFileSync(path13.join(PACKAGE_ROOT, "package.json"), "utf8")).version;
 var STATUS_CODE = { PASS: 0, FAIL: 1, NOT_EVALUATED: 2 };
 function targetRoot(args2) {
   const i = args2.indexOf("--target");
-  return path12.resolve(i === -1 ? process.cwd() : args2[i + 1]);
+  return path13.resolve(i === -1 ? process.cwd() : args2[i + 1]);
 }
 function copyIfAbsent(src, dest) {
-  if (fs11.existsSync(dest)) return false;
-  fs11.mkdirSync(path12.dirname(dest), { recursive: true });
-  fs11.copyFileSync(src, dest);
+  if (fs12.existsSync(dest)) return false;
+  fs12.mkdirSync(path13.dirname(dest), { recursive: true });
+  fs12.copyFileSync(src, dest);
   return true;
 }
 function activeFeature(root) {
-  const p = path12.join(root, "docs/specs/ACTIVE");
-  if (!fs11.existsSync(p)) return null;
-  const slug = fs11.readFileSync(p, "utf8").trim();
-  const dir = path12.join(root, "docs/specs", slug);
-  const yamlPath = path12.join(dir, "spec.yaml");
-  if (fs11.existsSync(yamlPath)) {
-    const specText2 = fs11.readFileSync(yamlPath, "utf8");
+  const p = path13.join(root, "docs/specs/ACTIVE");
+  if (!fs12.existsSync(p)) return null;
+  const slug = fs12.readFileSync(p, "utf8").trim();
+  const dir = path13.join(root, "docs/specs", slug);
+  const yamlPath = path13.join(dir, "spec.yaml");
+  if (fs12.existsSync(yamlPath)) {
+    const specText2 = fs12.readFileSync(yamlPath, "utf8");
     let parsed;
     try {
       parsed = yaml.load(specText2);
@@ -6107,9 +6410,9 @@ function activeFeature(root) {
       digest: result2.digest
     };
   }
-  const specPath = path12.join(dir, "spec.md");
-  if (!fs11.existsSync(specPath)) return { slug, dir, spec: null };
-  const specText = fs11.readFileSync(specPath, "utf8");
+  const specPath = path13.join(dir, "spec.md");
+  if (!fs12.existsSync(specPath)) return { slug, dir, spec: null };
+  const specText = fs12.readFileSync(specPath, "utf8");
   return { slug, dir, specText, spec: parseSpec(specText), digest: specDigest(specText) };
 }
 function refuseUncompiled(f) {
@@ -6128,7 +6431,7 @@ function report(gate, result2) {
 function featureTier(feature, root, policy, changed) {
   return effectiveTier(
     feature.spec.allowedPaths,
-    shippedPaths(changed, path12.relative(root, feature.dir), policy.meta_class ?? []),
+    shippedPaths(changed, path13.relative(root, feature.dir), policy.meta_class ?? []),
     policy
   );
 }
@@ -6148,59 +6451,59 @@ function record(root, slug, entry) {
 }
 var committedPolicyPaths = [".gatectl/policy.yaml", ".rda/policy.yaml"];
 var committedPubkeyPaths = [".gatectl/attest.pub", ".rda/attest.pub"];
-var policyDigest = (root) => specDigest(fs11.readFileSync(path12.join(resolveConfigDir(root).dir, "policy.yaml"), "utf8"));
+var policyDigest = (root) => specDigest(fs12.readFileSync(path13.join(resolveConfigDir(root).dir, "policy.yaml"), "utf8"));
 function engineDigest() {
   const base = PACKAGE_ROOT;
   const files = [];
   const walk = (dir) => {
-    for (const e of fs11.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const e of fs12.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       if (e.name === "node_modules" || e.name.startsWith(".")) continue;
-      const abs = path12.join(dir, e.name);
+      const abs = path13.join(dir, e.name);
       if (e.isDirectory()) walk(abs);
       else if (/\.mjs$/.test(e.name)) files.push(abs);
     }
   };
-  for (const dir of ["bin", "src"]) if (fs11.existsSync(path12.join(base, dir))) walk(path12.join(base, dir));
+  for (const dir of ["bin", "src"]) if (fs12.existsSync(path13.join(base, dir))) walk(path13.join(base, dir));
   const h = crypto13.createHash("sha256");
   for (const f of files) {
-    h.update(path12.relative(base, f));
+    h.update(path13.relative(base, f));
     h.update("\0");
-    h.update(fs11.readFileSync(f));
+    h.update(fs12.readFileSync(f));
   }
   return h.digest("hex");
 }
 var gitOut = (root, cmd2) => execSync3(`git ${cmd2}`, { cwd: root, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 var gitFile = (root, cmd2) => execSync3(`git ${cmd2}`, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
 function legacyLedgerNote(feature) {
-  const legacy = path12.join(feature.dir, "gates.json");
-  if (fs11.existsSync(legacy))
+  const legacy = path13.join(feature.dir, "gates.json");
+  if (fs12.existsSync(legacy))
     console.log(`note: ${legacy} is a pre-0.7 in-repo ledger and is no longer read \u2014 re-run the gates`);
 }
 function loadReview(root, slug) {
-  const p = path12.join(path12.dirname(reviewFile(root, slug)), "review.json");
-  if (!fs11.existsSync(p)) return null;
+  const p = path13.join(path13.dirname(reviewFile(root, slug)), "review.json");
+  if (!fs12.existsSync(p)) return null;
   try {
-    return JSON.parse(fs11.readFileSync(p, "utf8"));
+    return JSON.parse(fs12.readFileSync(p, "utf8"));
   } catch {
     return null;
   }
 }
 var lineReader = (root) => (rel) => {
-  const abs = path12.join(root, rel);
-  if (!abs.startsWith(root) || !fs11.existsSync(abs)) return null;
+  const abs = path13.join(root, rel);
+  if (!abs.startsWith(root) || !fs12.existsSync(abs)) return null;
   try {
-    return fs11.readFileSync(abs, "utf8").split("\n");
+    return fs12.readFileSync(abs, "utf8").split("\n");
   } catch {
     return null;
   }
 };
 function verifiedLockArtifacts(root, f) {
-  const lockPath = path12.join(f.dir, "spec.lock.json");
+  const lockPath = path13.join(f.dir, "spec.lock.json");
   const authority = openLedger(root, f.slug, { create: false });
-  if (!authority.ok || !fs11.existsSync(lockPath)) return [];
+  if (!authority.ok || !fs12.existsSync(lockPath)) return [];
   const ledger = readLedger(authority.path, authority.key);
   const lock = ledger.ok ? [...ledger.entries].reverse().find((e) => e.gate === "L") : null;
-  return lock?.status === "PASS" && lock.digest === f.digest && lock.lock_artifact === specDigest(fs11.readFileSync(lockPath, "utf8")) ? [path12.relative(root, lockPath)] : [];
+  return lock?.status === "PASS" && lock.digest === f.digest && lock.lock_artifact === specDigest(fs12.readFileSync(lockPath, "utf8")) ? [path13.relative(root, lockPath)] : [];
 }
 function currentResults(root, policy, entries) {
   if (!policy.workflow) return entries;
@@ -6213,12 +6516,12 @@ function recordedCompletion(root, target, f, authority, ledger) {
   if (last?.gate !== "Complete" || last.status !== "PASS") return null;
   try {
     const attPath = attestationFile(root, f.slug);
-    const completion = JSON.parse(fs11.readFileSync(path12.join(path12.dirname(attPath), "completion.json"), "utf8"));
-    const att = JSON.parse(fs11.readFileSync(attPath, "utf8"));
+    const completion = JSON.parse(fs12.readFileSync(path13.join(path13.dirname(attPath), "completion.json"), "utf8"));
+    const att = JSON.parse(fs12.readFileSync(attPath, "utf8"));
     if (!verifySignature(completion, authority.key) || !verifySignature(att, authority.key)) return null;
     const tree = treeDigest(root), policy = policyDigest(root);
     if (completion.decision !== "ACCEPT" || completion.feature !== f.slug || completion.tree !== tree || completion.spec_digest !== f.digest || completion.policy_digest !== policy || last.tree !== tree || last.digest !== f.digest || last.completion_mac !== completion.mac || att.tree !== tree || att.spec_digest !== f.digest || att.policy_digest !== policy || completion.attestation_mac !== att.mac || typeof completion.input_context !== "string") return null;
-    if (completion.input_context !== executionContext(fs11.realpathSync(root), target.policy, {})) return null;
+    if (completion.input_context !== executionContext(fs12.realpathSync(root), target.policy, {})) return null;
     if (indexDrift(root).length || treeDigest(root) !== tree) return null;
     return {
       state: "COMPLETED",
@@ -6257,14 +6560,14 @@ function gateCContext(root, target, f, label) {
     changed: changedPaths(root),
     diffText: currentDiffText(root),
     allowedPaths: f.spec.allowedPaths,
-    specDir: path12.relative(root, f.dir),
+    specDir: path13.relative(root, f.dir),
     metaClass: target.policy.meta_class ?? [],
     verifiedArtifacts: verifiedLockArtifacts(root, f)
   });
   if (requires.includes("R") && f.spec.acceptanceCriteriaWithoutTests.length)
     blockers.push("this tier requires per-criterion RED: policy-only criteria need tests after tier escalation");
-  const lockPath = path12.join(f.dir, "spec.lock.json");
-  const lock = fs11.existsSync(lockPath) ? latestLock(JSON.parse(fs11.readFileSync(lockPath, "utf8"))) : null;
+  const lockPath = path13.join(f.dir, "spec.lock.json");
+  const lock = fs12.existsSync(lockPath) ? latestLock(JSON.parse(fs12.readFileSync(lockPath, "utf8"))) : null;
   if (lock && lock.tier && lock.tier !== tier)
     blockers.push(`tier escalated ${lock.tier} \u2192 ${tier} by the actual diff \u2014 the lock was taken at ${lock.tier}; re-lock at ${tier}`);
   const tree = treeDigest(root);
@@ -6305,15 +6608,15 @@ function writeAttestation({ root, target, f, tier, requires, results, ledger, tr
     at: (/* @__PURE__ */ new Date()).toISOString()
   }, key);
   const attPath = attestationFile(root, f.slug);
-  fs11.mkdirSync(path12.dirname(attPath), { recursive: true });
-  fs11.writeFileSync(attPath, JSON.stringify(att, null, 2) + "\n");
+  fs12.mkdirSync(path13.dirname(attPath), { recursive: true });
+  fs12.writeFileSync(attPath, JSON.stringify(att, null, 2) + "\n");
   console.log(`  attested tree ${tree.slice(0, 12)}\u2026 \u2192 ${attPath}`);
   console.log(`  verify this commit afterwards with: gatectl verify --commit <sha>`);
   return 0;
 }
 function loadFeatureCritique(feature) {
-  const p = path12.join(feature.dir, "critique.md");
-  return fs11.existsSync(p) ? parseCritique(fs11.readFileSync(p, "utf8")) : null;
+  const p = path13.join(feature.dir, "critique.md");
+  return fs12.existsSync(p) ? parseCritique(fs12.readFileSync(p, "utf8")) : null;
 }
 function currentDiffText(root) {
   const staged = execSync3("git diff --cached --name-only", { cwd: root, encoding: "utf8" }).trim();
@@ -6326,11 +6629,11 @@ function listTargetFiles(root) {
     const out = [];
     const walk = (dir, depth) => {
       if (depth > 6) return;
-      for (const e of fs11.readdirSync(dir, { withFileTypes: true })) {
+      for (const e of fs12.readdirSync(dir, { withFileTypes: true })) {
         if (e.name === "node_modules" || e.name.startsWith(".")) continue;
-        const abs = path12.join(dir, e.name);
+        const abs = path13.join(dir, e.name);
         if (e.isDirectory()) walk(abs, depth + 1);
-        else out.push(path12.relative(root, abs));
+        else out.push(path13.relative(root, abs));
       }
     };
     try {
@@ -6344,9 +6647,9 @@ var MANIFESTS = ["package.json", "Cargo.toml", "go.mod", "pyproject.toml"];
 function readManifests(root) {
   const out = {};
   for (const name of MANIFESTS) {
-    const abs = path12.join(root, name);
-    if (!fs11.existsSync(abs)) continue;
-    const raw = fs11.readFileSync(abs, "utf8");
+    const abs = path13.join(root, name);
+    if (!fs12.existsSync(abs)) continue;
+    const raw = fs12.readFileSync(abs, "utf8");
     if (name !== "package.json") {
       out[name] = raw;
       continue;
@@ -6359,7 +6662,7 @@ function readManifests(root) {
   return out;
 }
 async function recallPriorRecords(root, policy, feature) {
-  const resolved = resolveMemoryConfig({ policy, env: process.env, repoName: path12.basename(root) });
+  const resolved = resolveMemoryConfig({ policy, env: process.env, repoName: path13.basename(root) });
   if (!resolved.ok) return [];
   const config = resolved.config;
   const [index] = await readPages({ config, fetchImpl: fetch, refs: [INDEX_REF] });
@@ -6384,20 +6687,20 @@ gatectl commit-check || {
 }
 `;
 function installHook(root, name, body2) {
-  const dir = path12.join(root, ".git/hooks");
-  if (!fs11.existsSync(dir)) return "no .git/hooks directory \u2014 not a git repository?";
-  const hook = path12.join(dir, name);
-  if (fs11.existsSync(hook)) return `${name} hook already exists \u2014 left untouched`;
-  fs11.writeFileSync(hook, body2, { mode: 493 });
-  return `installed ${path12.relative(root, hook)}`;
+  const dir = path13.join(root, ".git/hooks");
+  if (!fs12.existsSync(dir)) return "no .git/hooks directory \u2014 not a git repository?";
+  const hook = path13.join(dir, name);
+  if (fs12.existsSync(hook)) return `${name} hook already exists \u2014 left untouched`;
+  fs12.writeFileSync(hook, body2, { mode: 493 });
+  return `installed ${path13.relative(root, hook)}`;
 }
 function installPostCommitHook(root) {
-  const dir = path12.join(root, ".git/hooks");
-  if (!fs11.existsSync(dir)) return "no .git/hooks directory \u2014 not a git repository?";
-  const hook = path12.join(dir, "post-commit");
-  if (fs11.existsSync(hook)) return "post-commit hook already exists \u2014 left untouched";
-  fs11.writeFileSync(hook, POST_COMMIT_HOOK, { mode: 493 });
-  return `installed ${path12.relative(root, hook)}`;
+  const dir = path13.join(root, ".git/hooks");
+  if (!fs12.existsSync(dir)) return "no .git/hooks directory \u2014 not a git repository?";
+  const hook = path13.join(dir, "post-commit");
+  if (fs12.existsSync(hook)) return "post-commit hook already exists \u2014 left untouched";
+  fs12.writeFileSync(hook, POST_COMMIT_HOOK, { mode: 493 });
+  return `installed ${path13.relative(root, hook)}`;
 }
 var COMMANDS = {
   async workflow(args2) {
@@ -6411,7 +6714,7 @@ var COMMANDS = {
       return 0;
     }
     const configured = configureWorkflow(policy, mode);
-    fs11.writeFileSync(path12.join(resolveConfigDir(root).dir, "policy.yaml"), yaml.dump(configured, { lineWidth: 110 }));
+    fs12.writeFileSync(path13.join(resolveConfigDir(root).dir, "policy.yaml"), yaml.dump(configured, { lineWidth: 110 }));
     console.log(`Workflow changed to ${mode}. Review and commit this policy change separately before task work; earlier evidence is stale.`);
     return 0;
   },
@@ -6530,6 +6833,34 @@ var COMMANDS = {
       throw e;
     }
   },
+  // The readiness map: derived from recorded evidence, never evidence itself. Lazily imported so no
+  // gate path reaches it.
+  async capabilities(args2) {
+    const root = targetRoot(args2);
+    let target;
+    try {
+      target = openTarget(root);
+    } catch (e) {
+      console.error(e.message);
+      return 2;
+    }
+    const { buildMap: buildMap2, runMissing: runMissing2, renderMap: renderMap2 } = await Promise.resolve().then(() => (init_capabilities(), capabilities_exports));
+    const gi = args2.indexOf("--goal");
+    const goal = gi === -1 ? null : args2[gi + 1];
+    let map2 = buildMap2(root, target.policy, target.mvp);
+    if (args2.includes("--run")) {
+      const r = runMissing2(root, target.policy, map2, { goal });
+      if (r.code !== 0) {
+        console.error(r.message);
+        return r.code;
+      }
+      console.error(r.message);
+      map2 = buildMap2(root, target.policy, target.mvp);
+    }
+    if (goal) map2 = { ...map2, groups: map2.groups.filter((g) => g.id === goal) };
+    console.log(args2.includes("--json") ? JSON.stringify(map2, null, 2) : renderMap2(map2));
+    return 0;
+  },
   // The work store is context for agents, never gate evidence. Imported lazily so that node:sqlite
   // is loaded only here, and no gate path can reach it.
   async work(args2) {
@@ -6537,12 +6868,12 @@ var COMMANDS = {
     return runWork2(args2, targetRoot(args2));
   },
   async hook() {
-    const raw = fs11.readFileSync(0, "utf8");
+    const raw = fs12.readFileSync(0, "utf8");
     if (raw.length > 1024 * 1024) {
       console.error("hook input is too large");
       return 2;
     }
-    console.log(JSON.stringify(runPluginHook(JSON.parse(raw), path12.join(PACKAGE_ROOT, "bin/gatectl.mjs"))));
+    console.log(JSON.stringify(runPluginHook(JSON.parse(raw), path13.join(PACKAGE_ROOT, "bin/gatectl.mjs"))));
     return 0;
   },
   async task(args2) {
@@ -6613,13 +6944,13 @@ var COMMANDS = {
       console.error("--mode must be fast or strict");
       return 2;
     }
-    const policyPath = path12.join(resolveConfigDir(root).dir, "policy.yaml");
-    if (!fs11.existsSync(policyPath)) {
-      const template = fs11.readFileSync(path12.join(TEMPLATES, "policy.yaml"), "utf8");
+    const policyPath = path13.join(resolveConfigDir(root).dir, "policy.yaml");
+    if (!fs12.existsSync(policyPath)) {
+      const template = fs12.readFileSync(path13.join(TEMPLATES, "policy.yaml"), "utf8");
       const files = listTargetFiles(root);
       const detection = detectCommands({ manifests: readManifests(root), files });
       const audit = auditTierPaths(yaml.load(template).tiers, files);
-      fs11.mkdirSync(path12.dirname(policyPath), { recursive: true });
+      fs12.mkdirSync(path13.dirname(policyPath), { recursive: true });
       let rendered = renderPolicy(template, detection);
       if (client) {
         const config = yaml.load(rendered);
@@ -6638,7 +6969,7 @@ var COMMANDS = {
         rendered = rendered.replace(/^(  required_for_tiers:) .+$/m, `$1 [${configured.critic.required_for_tiers.join(", ")}]`);
         rendered += "\n" + yaml.dump({ workflow: configured.workflow });
       }
-      fs11.writeFileSync(policyPath, rendered);
+      fs12.writeFileSync(policyPath, rendered);
       for (const e of detection.evidence) console.log(`detected: ${e}`);
       for (const [k2, v] of Object.entries(detection.commands)) console.log(`  ${k2.padEnd(13)} \u2192 ${v}`);
       if (audit.unmatched.length > 0)
@@ -6648,13 +6979,13 @@ var COMMANDS = {
       for (const p of audit.populated.filter((p2) => p2.tier === "A"))
         console.log(`tiers: ${p.glob} matches ${p.count} file(s) \u2192 tier A. Confirm that is right.`);
     }
-    copyIfAbsent(path12.join(TEMPLATES, "MVP.yaml"), path12.join(resolveConfigDir(root).dir, "MVP.yaml"));
-    fs11.mkdirSync(path12.join(root, "docs/specs"), { recursive: true });
+    copyIfAbsent(path13.join(TEMPLATES, "MVP.yaml"), path13.join(resolveConfigDir(root).dir, "MVP.yaml"));
+    fs12.mkdirSync(path13.join(root, "docs/specs"), { recursive: true });
     console.log("gatectl initialized (existing files left untouched)");
     if (args2.includes("--with-ci")) {
-      const dest = path12.join(root, ".github/workflows/gatectl-verify.yml");
-      const wrote = copyIfAbsent(path12.join(TEMPLATES, "ci/gatectl-verify.yml"), dest);
-      console.log(`ci: ${wrote ? `wrote ${path12.relative(root, dest)}` : "workflow already exists \u2014 left untouched"}`);
+      const dest = path13.join(root, ".github/workflows/gatectl-verify.yml");
+      const wrote = copyIfAbsent(path13.join(TEMPLATES, "ci/gatectl-verify.yml"), dest);
+      console.log(`ci: ${wrote ? `wrote ${path13.relative(root, dest)}` : "workflow already exists \u2014 left untouched"}`);
       if (wrote) console.log("ci: run `gatectl keygen`, put the private key in the GATECTL_SIGNING_KEY secret, and make the check required");
     }
     if (args2.includes("--with-hooks")) {
@@ -6679,17 +7010,17 @@ var COMMANDS = {
       console.error("usage: gatectl new <slug>");
       return 2;
     }
-    const dir = path12.join(root, "docs/specs", slug);
-    fs11.mkdirSync(dir, { recursive: true });
-    const yamlPath = path12.join(dir, "spec.yaml");
-    const mdPath = path12.join(dir, "spec.md");
+    const dir = path13.join(root, "docs/specs", slug);
+    fs12.mkdirSync(dir, { recursive: true });
+    const yamlPath = path13.join(dir, "spec.yaml");
+    const mdPath = path13.join(dir, "spec.md");
     const wrote = [];
     for (const [target, template] of [[yamlPath, "spec.yaml"], [mdPath, "spec.md"]]) {
-      if (fs11.existsSync(target)) continue;
-      fs11.writeFileSync(target, fs11.readFileSync(path12.join(TEMPLATES, template), "utf8").replaceAll("{slug}", slug));
-      wrote.push(path12.relative(root, target));
+      if (fs12.existsSync(target)) continue;
+      fs12.writeFileSync(target, fs12.readFileSync(path13.join(TEMPLATES, template), "utf8").replaceAll("{slug}", slug));
+      wrote.push(path13.relative(root, target));
     }
-    fs11.writeFileSync(path12.join(root, "docs/specs/ACTIVE"), slug + "\n");
+    fs12.writeFileSync(path13.join(root, "docs/specs/ACTIVE"), slug + "\n");
     console.log(`scaffolded ${wrote.join(", ") || "(nothing new)"} and set ACTIVE`);
     return 0;
   },
@@ -6743,7 +7074,7 @@ var COMMANDS = {
       obligationFiles: f.spec?.testObligations?.map((o) => o.file) ?? [],
       testGlobs,
       matches: matchesAny
-    }).filter((p0) => !p0.startsWith(path12.relative(root, f.dir)));
+    }).filter((p0) => !p0.startsWith(path13.relative(root, f.dir)));
     let baseHint = null;
     for (const ref2 of ["origin/main", "main", "HEAD"]) {
       try {
@@ -6754,9 +7085,9 @@ var COMMANDS = {
     }
     const attested = (() => {
       const attPath = attestationFile(root, f.slug);
-      if (!fs11.existsSync(attPath) || !l.ok) return false;
+      if (!fs12.existsSync(attPath) || !l.ok) return false;
       try {
-        const att = JSON.parse(fs11.readFileSync(attPath, "utf8"));
+        const att = JSON.parse(fs12.readFileSync(attPath, "utf8"));
         return verifySignature(att, l.key) && att.tree === treeDigest(root) && att.spec_digest === f.digest && att.policy_digest === policyDigest(root) && gateCContext(root, target, f, "next").result?.status === "PASS";
       } catch {
         return false;
@@ -6819,7 +7150,7 @@ var COMMANDS = {
       tier = "?";
       declared = "?";
     }
-    const locks = fs11.existsSync(path12.join(f.dir, "spec.lock.json")) ? JSON.parse(fs11.readFileSync(path12.join(f.dir, "spec.lock.json"), "utf8")) : [];
+    const locks = fs12.existsSync(path13.join(f.dir, "spec.lock.json")) ? JSON.parse(fs12.readFileSync(path13.join(f.dir, "spec.lock.json"), "utf8")) : [];
     const lock = latestLock(locks);
     console.log(`feature: ${f.slug}
 state: ${f.spec.state}
@@ -6847,8 +7178,8 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     const result2 = gateL({ spec: f.spec, critique: loadFeatureCritique(f), tier, policy: target.policy, mvp: target.mvp });
     const code2 = report("L", result2);
     if (code2 !== 0) return code2;
-    const lockPath = path12.join(f.dir, "spec.lock.json");
-    const locks = fs11.existsSync(lockPath) ? JSON.parse(fs11.readFileSync(lockPath, "utf8")) : [];
+    const lockPath = path13.join(f.dir, "spec.lock.json");
+    const locks = fs12.existsSync(lockPath) ? JSON.parse(fs12.readFileSync(lockPath, "utf8")) : [];
     const next = appendLock(locks, {
       digest: f.digest,
       at: (/* @__PURE__ */ new Date()).toISOString(),
@@ -6856,8 +7187,8 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       requiredTests: f.spec.requiredTests,
       allowedPaths: f.spec.allowedPaths
     });
-    fs11.writeFileSync(lockPath, JSON.stringify(next, null, 2));
-    record(root, f.slug, { gate: "L", status: "PASS", digest: f.digest, lock_artifact: specDigest(fs11.readFileSync(lockPath, "utf8")), tree: treeDigest(root), at: (/* @__PURE__ */ new Date()).toISOString() });
+    fs12.writeFileSync(lockPath, JSON.stringify(next, null, 2));
+    record(root, f.slug, { gate: "L", status: "PASS", digest: f.digest, lock_artifact: specDigest(fs12.readFileSync(lockPath, "utf8")), tree: treeDigest(root), at: (/* @__PURE__ */ new Date()).toISOString() });
     console.log(next === locks ? "already locked at this digest" : `locked v${latestLock(next).version}`);
     return 0;
   },
@@ -6870,24 +7201,24 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     const testGlobs = target.policy.test_paths ?? ["test/**", "e2e/**", "**/*.test.*", "**/*.spec.*"];
     const tp = testPatch({ changed, obligationFiles, testGlobs, matches: matchesAny });
     const ip = implementationPatch({ changed, obligationFiles, testGlobs, matches: matchesAny });
-    const work = fs11.mkdtempSync(path12.join(os5.tmpdir(), "rda-red-"));
-    const dir = path12.join(work, "tree");
+    const work = fs12.mkdtempSync(path13.join(os5.tmpdir(), "rda-red-"));
+    const dir = path13.join(work, "tree");
     try {
       execSync3(`git worktree add -q --detach ${dir} ${baseSha}`, { cwd: root, stdio: "pipe" });
       for (const rel of tp) {
-        const from = path12.join(root, rel);
-        if (!fs11.existsSync(from)) continue;
-        fs11.mkdirSync(path12.dirname(path12.join(dir, rel)), { recursive: true });
-        fs11.copyFileSync(from, path12.join(dir, rel));
+        const from = path13.join(root, rel);
+        if (!fs12.existsSync(from)) continue;
+        fs12.mkdirSync(path13.dirname(path13.join(dir, rel)), { recursive: true });
+        fs12.copyFileSync(from, path13.join(dir, rel));
       }
-      const modules = path12.join(root, "node_modules");
-      if (fs11.existsSync(modules) && !fs11.existsSync(path12.join(dir, "node_modules")))
-        fs11.symlinkSync(modules, path12.join(dir, "node_modules"), "dir");
+      const modules = path13.join(root, "node_modules");
+      if (fs12.existsSync(modules) && !fs12.existsSync(path13.join(dir, "node_modules")))
+        fs12.symlinkSync(modules, path13.join(dir, "node_modules"), "dir");
       else if (target.policy.commands?.install && target.policy.commands.install !== "none")
         runCmd(dir, target.policy.commands.install);
       let replayTree = null;
       try {
-        const idx = path12.join(work, "index");
+        const idx = path13.join(work, "index");
         const env = { ...process.env, GIT_INDEX_FILE: idx };
         execSync3("git add -A", { cwd: dir, env, stdio: "pipe" });
         replayTree = execSync3("git write-tree", { cwd: dir, env, encoding: "utf8" }).trim();
@@ -6895,7 +7226,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       }
       const verdicts = f.spec.testObligations.map((o) => {
         const obligation = { criterion: o.ac ?? "AC-?", file: o.file, selector: o.selector, expected_red: o.expectedRed ?? "assertion" };
-        if (!fs11.existsSync(path12.join(dir, o.file)))
+        if (!fs12.existsSync(path13.join(dir, o.file)))
           return {
             ok: false,
             status: "NOT_EVALUATED",
@@ -6915,7 +7246,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
         execSync3(`git worktree remove --force ${dir}`, { cwd: root, stdio: "pipe" });
       } catch {
       }
-      fs11.rmSync(work, { recursive: true, force: true });
+      fs12.rmSync(work, { recursive: true, force: true });
     }
   },
   async red(args2) {
@@ -7090,7 +7421,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       changed,
       diffText,
       spec: f.spec,
-      specDir: path12.relative(root, f.dir),
+      specDir: path13.relative(root, f.dir),
       verifiedArtifacts
     });
     if (treeDigest(root) !== before) {
@@ -7115,9 +7446,9 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       console.error("no active feature");
       return 2;
     }
-    const critiquePath = path12.join(f.dir, "critique.md");
-    if (fs11.existsSync(critiquePath) && !args2.includes("--force")) {
-      const raw = fs11.readFileSync(critiquePath, "utf8");
+    const critiquePath = path13.join(f.dir, "critique.md");
+    if (fs12.existsSync(critiquePath) && !args2.includes("--force")) {
+      const raw = fs12.readFileSync(critiquePath, "utf8");
       const resolved = [...raw.matchAll(/^\s*>?\s*(?:\*\*)?RESOLVED(?:\*\*)?:/gm)].length;
       if (resolved > 0) {
         console.error(`${critiquePath} already carries ${resolved} resolved finding(s)`);
@@ -7125,7 +7456,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
         return 2;
       }
     }
-    const priorText = fs11.existsSync(critiquePath) ? fs11.readFileSync(critiquePath, "utf8") : null;
+    const priorText = fs12.existsSync(critiquePath) ? fs12.readFileSync(critiquePath, "utf8") : null;
     const priorRound = priorText ? splitRounds(priorText) : null;
     const { last: priorRounds, counts: priorCounts } = roundHistory(priorText);
     if (priorRound) console.log(`round ${priorRounds + 1}: ${priorRound.length} finding(s) carried from the last one`);
@@ -7152,8 +7483,8 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       history: priorRound ? [...priorCounts, priorRound.length] : priorCounts,
       archive: priorArchive(priorText)
     });
-    fs11.writeFileSync(path12.join(f.dir, "critique.md"), file);
-    console.log(`wrote ${path12.join(f.dir, "critique.md")}`);
+    fs12.writeFileSync(path13.join(f.dir, "critique.md"), file);
+    console.log(`wrote ${path13.join(f.dir, "critique.md")}`);
     return 0;
   },
   // Gate X's model call, kept apart from the gate exactly as `critique` is from `lock`: one
@@ -7233,9 +7564,9 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     const ledger = authority.ok ? readLedger(authority.path, authority.key) : { ok: false, entries: [] };
     const prior = ledger.ok ? [...ledger.entries].reverse().find((e) => e.gate === "Review" && e.digest === f.digest && e.config_digest === configDigest) : null;
     if (!args2.includes("--fresh") && !args2.includes("--full") && prior?.tree === candidate) {
-      const out2 = path12.join(path12.dirname(reviewFile(root, f.slug)), "review.json");
-      fs11.mkdirSync(path12.dirname(out2), { recursive: true });
-      fs11.writeFileSync(out2, JSON.stringify(prior.review, null, 2) + "\n");
+      const out2 = path13.join(path13.dirname(reviewFile(root, f.slug)), "review.json");
+      fs12.mkdirSync(path13.dirname(out2), { recursive: true });
+      fs12.writeFileSync(out2, JSON.stringify(prior.review, null, 2) + "\n");
       console.log("Reused review for this exact candidate; next: gatectl review-check");
       return 0;
     }
@@ -7291,9 +7622,9 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       model: parsed.model ?? target.policy.reviewer.model ?? null,
       at: (/* @__PURE__ */ new Date()).toISOString()
     };
-    const out = path12.join(path12.dirname(reviewFile(root, f.slug)), "review.json");
-    fs11.mkdirSync(path12.dirname(out), { recursive: true });
-    fs11.writeFileSync(out, JSON.stringify(review, null, 2) + "\n");
+    const out = path13.join(path13.dirname(reviewFile(root, f.slug)), "review.json");
+    fs12.mkdirSync(path13.dirname(out), { recursive: true });
+    fs12.writeFileSync(out, JSON.stringify(review, null, 2) + "\n");
     if (validateReview(review).ok) record(root, f.slug, { gate: "Review", status: "PASS", digest: f.digest, tree, config_digest: configDigest, review, incremental, at: (/* @__PURE__ */ new Date()).toISOString() });
     console.log(incremental ? "Reviewed changes since previous review" : "Reviewed complete task diff");
     const severe = (review.findings ?? []).filter((x) => ["critical", "high"].includes(x.severity));
@@ -7415,7 +7746,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       console.error("no active feature");
       return 2;
     }
-    const inputContext = executionContext(fs11.realpathSync(root), target.policy, {});
+    const inputContext = executionContext(fs12.realpathSync(root), target.policy, {});
     const ctx = gateCContext(root, target, f, "complete");
     if (ctx.code !== void 0) return ctx.code;
     const tree = ctx.tree;
@@ -7426,8 +7757,8 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     const obligations2 = f.spec.testObligations.map((o) => ({ criterion: o.ac ?? "AC-?", file: o.file, selector: o.selector }));
     const attPath = attestationFile(root, f.slug);
     let attestation = { ok: false, detail: "no attestation \u2014 run commit-check first" };
-    if (fs11.existsSync(attPath)) {
-      const att = JSON.parse(fs11.readFileSync(attPath, "utf8"));
+    if (fs12.existsSync(attPath)) {
+      const att = JSON.parse(fs12.readFileSync(attPath, "utf8"));
       if (!verifySignature(att, ctx.key)) attestation = { ok: false, detail: "the attestation does not verify" };
       else if (att.tree !== tree) attestation = { ok: false, detail: "the attestation is for a different tree" };
       else if (att.spec_digest !== f.digest || att.policy_digest !== policyDigest(root)) attestation = { ok: false, detail: "the attestation is for a different specification or policy" };
@@ -7442,7 +7773,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       attestation,
       requires: ctx.requires
     });
-    if (inputContext !== executionContext(fs11.realpathSync(root), target.policy, {}) || ctx.tree !== treeDigest(root) || indexDrift(root).length) {
+    if (inputContext !== executionContext(fs12.realpathSync(root), target.policy, {}) || ctx.tree !== treeDigest(root) || indexDrift(root).length) {
       console.error("completion: NOT_EVALUATED \u2014 candidate or file inputs changed during validation");
       return 2;
     }
@@ -7472,9 +7803,9 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       evidence: { red: red?.replay ? { base: red.replay.base, tree: red.replay.tree } : null, green: green ? { tree: green.tree } : null },
       at: (/* @__PURE__ */ new Date()).toISOString()
     }, ctx.key);
-    const out = path12.join(path12.dirname(attPath), "completion.json");
-    fs11.mkdirSync(path12.dirname(out), { recursive: true });
-    fs11.writeFileSync(out, JSON.stringify(record0, null, 2) + "\n");
+    const out = path13.join(path13.dirname(attPath), "completion.json");
+    fs12.mkdirSync(path13.dirname(out), { recursive: true });
+    fs12.writeFileSync(out, JSON.stringify(record0, null, 2) + "\n");
     record(root, f.slug, {
       gate: "Complete",
       status: decision.decision === "ACCEPT" ? "PASS" : "FAIL",
@@ -7538,14 +7869,14 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     if (attPathArg || !wantRerun) {
       try {
         const p0 = attPathArg ?? attestationFile(root, activeFeature(root)?.slug ?? "");
-        att = JSON.parse(fs11.readFileSync(p0, "utf8"));
+        att = JSON.parse(fs12.readFileSync(p0, "utf8"));
       } catch {
         console.error("verify: NOT_EVALUATED\n  - no readable attestation (pass --attestation <file>, or --rerun to check the commit itself)");
         return 2;
       }
     } else {
       try {
-        att = JSON.parse(fs11.readFileSync(attestationFile(root, activeFeature(root)?.slug ?? ""), "utf8"));
+        att = JSON.parse(fs12.readFileSync(attestationFile(root, activeFeature(root)?.slug ?? ""), "utf8"));
       } catch {
       }
     }
@@ -7706,8 +8037,8 @@ ${result2.errors.map((x) => `    ${x}`).join("\n")}`);
       console.log(`verify ${sha.slice(0, 12)}: no claim to check \u2014 re-running this commit's gates directly`);
     }
     if (!wantRerun) return 0;
-    const work = fs11.mkdtempSync(path12.join(os5.tmpdir(), "rda-verify-"));
-    const dir = path12.join(work, "tree");
+    const work = fs12.mkdtempSync(path13.join(os5.tmpdir(), "rda-verify-"));
+    const dir = path13.join(work, "tree");
     try {
       execSync3(`git worktree add -q --detach ${dir} ${sha}`, { cwd: root, stdio: "pipe" });
       const policy = yaml.load(policyText);
@@ -7790,8 +8121,8 @@ ${diagnostics(r2)}`);
   - ${check.reasons.join("\n  - ")}`);
           return 2;
         }
-        const out2 = path12.resolve(evidencePath);
-        fs11.writeFileSync(out2, JSON.stringify(envelope, null, 2) + "\n");
+        const out2 = path13.resolve(evidencePath);
+        fs12.writeFileSync(out2, JSON.stringify(envelope, null, 2) + "\n");
         console.log(`evidence (unsigned) for ${sha.slice(0, 12)} \u2192 ${out2}`);
         console.log(`  envelope digest ${envelopeDigest(envelope).slice(0, 16)}\u2026`);
         console.log("  sign it from a job that runs none of this repository's code: gatectl attest --evidence <file>");
@@ -7805,8 +8136,8 @@ ${diagnostics(r2)}`);
         return 2;
       }
       const issued = signIssued(body2, ik.key);
-      const out = path12.resolve(at("--out") ?? "rda-issued.json");
-      fs11.writeFileSync(out, JSON.stringify(issued, null, 2) + "\n");
+      const out = path13.resolve(at("--out") ?? "rda-issued.json");
+      fs12.writeFileSync(out, JSON.stringify(issued, null, 2) + "\n");
       console.log(`issued verdict for ${sha.slice(0, 12)} \u2192 ${out}`);
       console.log(`  signed with ${ik.source}`);
       if (process.env.GITHUB_ACTIONS)
@@ -7822,7 +8153,7 @@ ${diagnostics(r2)}`);
         execSync3(`git worktree remove --force ${dir}`, { cwd: root, stdio: "pipe" });
       } catch {
       }
-      fs11.rmSync(work, { recursive: true, force: true });
+      fs12.rmSync(work, { recursive: true, force: true });
     }
   },
   // The signer. It is the only process that holds the key, and it runs NOTHING from the
@@ -7842,7 +8173,7 @@ ${diagnostics(r2)}`);
     };
     let envelope;
     try {
-      envelope = JSON.parse(fs11.readFileSync(path12.resolve(at("--evidence") ?? "rda-evidence.json"), "utf8"));
+      envelope = JSON.parse(fs12.readFileSync(path13.resolve(at("--evidence") ?? "rda-evidence.json"), "utf8"));
     } catch (e) {
       console.error(`attest: NOT_EVALUATED
   - no readable evidence (--evidence <file>): ${e.message}`);
@@ -7903,8 +8234,8 @@ ${diagnostics(r2)}`);
         at: (/* @__PURE__ */ new Date()).toISOString()
       }
     }, ik.key);
-    const out = path12.resolve(at("--out") ?? "rda-issued.json");
-    fs11.writeFileSync(out, JSON.stringify(verdict, null, 2) + "\n");
+    const out = path13.resolve(at("--out") ?? "rda-issued.json");
+    fs12.writeFileSync(out, JSON.stringify(verdict, null, 2) + "\n");
     console.log(`attest ${String(envelope.head_sha).slice(0, 12)}: SIGNED \u2192 ${out}`);
     console.log(`  cross-checked: ${checked.length ? checked.join(", ") : "nothing \u2014 no CI context was available to this signer"}`);
     console.log(`  gates in evidence: ${Object.entries(envelope.gates).map(([g, v]) => `${g}=${v}`).join(", ")}`);
@@ -7944,8 +8275,8 @@ ${diagnostics(r2)}`);
       console.log(`  ${result2.compiled.blocking_questions.length} BLOCKING question(s) still open`);
     const out = args2.indexOf("--out");
     if (out !== -1 && args2[out + 1]) {
-      fs11.writeFileSync(
-        path12.resolve(args2[out + 1]),
+      fs12.writeFileSync(
+        path13.resolve(args2[out + 1]),
         JSON.stringify({ digest: result2.digest, compiled: result2.compiled, obligations: result2.obligations }, null, 2) + "\n"
       );
       console.log(`  wrote ${args2[out + 1]}`);
@@ -7957,17 +8288,17 @@ ${diagnostics(r2)}`);
   async keygen(args2) {
     const root = targetRoot(args2);
     const file = issuerKeyFile(root);
-    if (fs11.existsSync(file) && !args2.includes("--force")) {
+    if (fs12.existsSync(file) && !args2.includes("--force")) {
       console.error(`issuer key already exists: ${file}
   --force replaces it \u2014 every verdict signed by the old key stops verifying`);
       return 2;
     }
     const { privatePem, publicPem } = generateIssuerKeypair();
-    fs11.mkdirSync(path12.dirname(file), { recursive: true, mode: 448 });
-    fs11.writeFileSync(file, privatePem, { mode: 384 });
-    const pub = path12.join(resolveConfigDir(root).dir, "attest.pub");
-    fs11.mkdirSync(path12.dirname(pub), { recursive: true });
-    fs11.writeFileSync(pub, publicPem);
+    fs12.mkdirSync(path13.dirname(file), { recursive: true, mode: 448 });
+    fs12.writeFileSync(file, privatePem, { mode: 384 });
+    const pub = path13.join(resolveConfigDir(root).dir, "attest.pub");
+    fs12.mkdirSync(path13.dirname(pub), { recursive: true });
+    fs12.writeFileSync(pub, publicPem);
     console.log(`private key: ${file} (0600 \u2014 never commit it, never print it into a log)`);
     console.log(`public key:  ${pub} (commit this)`);
     console.log("");
@@ -8027,7 +8358,7 @@ ${diagnostics(r2)}`);
 ${content}`);
       return 0;
     }
-    const resolved = resolveMemoryConfig({ policy: target.policy, env: process.env, repoName: path12.basename(root) });
+    const resolved = resolveMemoryConfig({ policy: target.policy, env: process.env, repoName: path13.basename(root) });
     if (!resolved.ok) {
       console.error(`NOT_EVALUATED: ${resolved.detail}`);
       return 2;
@@ -8063,4 +8394,5 @@ try {
   console.error(`NOT_EVALUATED: ${e.message}`);
   process.exit(2);
 }
+await new Promise((resolve) => process.stdout.write("", resolve));
 process.exit(typeof code === "number" ? code : 2);

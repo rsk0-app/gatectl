@@ -15,4 +15,7 @@ try {
   console.error(`NOT_EVALUATED: ${e.message}`)
   process.exit(2)
 }
+// A pipe is written asynchronously: exiting before it drains cuts large output (a --json report)
+// short. The callback of an empty write runs once everything queued before it is flushed.
+await new Promise((resolve) => process.stdout.write("", resolve))
 process.exit(typeof code === "number" ? code : 2)

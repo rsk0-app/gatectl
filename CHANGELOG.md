@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `gatectl capabilities`: a readiness map of MVP goals from locks, signed ledgers cross-checked with completion records, test presence and signed receipts for the exact current tree. Goals nobody works on, undeclared goals and placeholder references are listed. `--run` executes what is not yet proven on this version.
 - `gatectl goal propose|confirm|show`: the owner's goal in `docs/goal.yaml`, drafted from verbatim owner words. Confirmation counts only when the UserPromptSubmit hook observed the owner send the exact line naming the draft's full sha256 id after the draft; edits make it "changed since the owner confirmed it". SessionStart and `work brief` show the goal first.
 - The UserPromptSubmit hook keeps a bounded, 0600 log of owner prompts and a never-rotated log of confirmation messages under the state directory. Gates read neither.
 

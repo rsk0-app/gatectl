@@ -484,6 +484,16 @@ full sha256 id. The UserPromptSubmit hook logs owner prompts under the state dir
 content is a new id and shows as "changed since the owner confirmed it". "Observed" means seen by
 the gatectl hook — not cryptographic proof. SessionStart shows the goal and its status first.
 
+**Readiness map.** `gatectl capabilities [--json] [--goal <id>] [--run]` groups every feature in
+`docs/specs` under the goals in `.gatectl/MVP.yaml` (plus maintenance, undeclared goals, unset
+references and unreadable specs) and reports, from records gatectl already keeps: whether the spec
+is locked at its current digest; acceptance from the signed ledger cross-checked with the
+completion record — accepted, accepted at an earlier tree, an earlier revision accepted, rejected,
+not finished, no record here, unreadable; and per criterion whether its test exists and whether it
+passed on this exact version (a signed check receipt for this tree, execution context and command:
+pass, fail, no test ran, not run on this version). It never says "implemented". `--run` executes
+the tests not yet proven on this version through the gates' cached runner.
+
 **No gate reads the work store.** `next`, `status`, `commit-check`, `finish` and the Stop hook
 answer identically whatever it holds; `test/work-state.test.mjs` checks both the import graph and
 the behaviour. Every command other than `work` still runs on Node 20.
