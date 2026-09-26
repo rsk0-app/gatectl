@@ -1,0 +1,32 @@
+id: fix-exit-closed-pipe
+state: DRAFT
+mvp_ref: maintenance
+intent: |
+  7c78c39 made the CLI wait for stdout to drain before exiting, so large piped output is complete.
+  When the reader has already closed the pipe (for example `gatectl work brief | head -3`), that
+  wait raises an unhandled EPIPE: Node prints a stack trace and exits 1 instead of the command's
+  own code. An error handler on stdout is installed before the command runs; a closed stdout
+  (EPIPE at any time) is remembered and treated as flushed. Every exit — normal return, or an
+  exception (code 2) — goes through one path that waits for an open stdout to drain and then exits
+  with the command's code.
+invariants:
+  - id: INV-01
+    statement: Output to an open pipe is still written completely before exit, and every command keeps its own exit code.
+acceptance_criteria:
+  - id: AC-01
+    statement: With the reader closed before the command writes, the CLI child exits with the command's own code (0, 1 and 2 cases), is not killed by a signal and prints no EPIPE stack trace; a large --json output read fully by the parent parses completely.
+    test:
+      file: test/cli-smoke.test.mjs
+      selector: a closed pipe does not turn into a crash
+      expected_red: assertion
+allowed_paths:
+  - bin/gatectl.mjs
+  - test/cli-smoke.test.mjs
+  - plugins/gatectl/bin/gatectl.mjs
+  - CHANGELOG.md
+  - docs/specs/fix-exit-closed-pipe/**
+  - docs/specs/ACTIVE
+rollback:
+  strategy: Revert the commit.
+  notes: null
+blocking_questions: []

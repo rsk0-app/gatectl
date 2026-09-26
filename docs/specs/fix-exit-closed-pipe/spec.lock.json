@@ -1,0 +1,19 @@
+[
+  {
+    "version": 1,
+    "digest": "d3742f34bdae0ccab72991ead77701090e1083a30425cf01dc71fb9045d588a5",
+    "at": "2026-09-26T18:14:26.548Z",
+    "tier": "A",
+    "requiredTests": [
+      "test/cli-smoke.test.mjs"
+    ],
+    "allowedPaths": [
+      "bin/gatectl.mjs",
+      "test/cli-smoke.test.mjs",
+      "plugins/gatectl/bin/gatectl.mjs",
+      "CHANGELOG.md",
+      "docs/specs/fix-exit-closed-pipe/**",
+      "docs/specs/ACTIVE"
+    ]
+  }
+]

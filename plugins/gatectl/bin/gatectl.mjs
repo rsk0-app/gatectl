@@ -4015,10 +4015,10 @@ var init_goal = __esm({
     PROMPT_LIMIT = 200;
     TEXT_LIMIT = 4e3;
     GoalError = class extends Error {
-      constructor(code2, message, exit = 2) {
+      constructor(code2, message, exit2 = 2) {
         super(`${code2}: ${message}`);
         this.code = code2;
-        this.exit = exit;
+        this.exit = exit2;
       }
     };
     dirs = /* @__PURE__ */ new Map();
@@ -4490,10 +4490,10 @@ var init_store = __esm({
     init_authority();
     SCHEMA_VERSION2 = 1;
     WorkError = class extends Error {
-      constructor(code2, message, exit = 2) {
+      constructor(code2, message, exit2 = 2) {
         super(`${code2}: ${message}`);
         this.code = code2;
-        this.exit = exit;
+        this.exit = exit2;
       }
     };
     MIGRATIONS = [
@@ -8380,19 +8380,29 @@ ${content}`);
 };
 
 // bin/gatectl.mjs
+var stdoutClosed = false;
+process.stdout.on("error", () => {
+  stdoutClosed = true;
+});
+async function exit(code2) {
+  if (!stdoutClosed) await new Promise((resolve) => {
+    process.stdout.once("error", resolve);
+    process.stdout.write("", resolve);
+  });
+  process.exit(code2);
+}
 var [cmd, ...args] = process.argv.slice(2);
 var handler = COMMANDS[cmd];
 if (!handler) {
   console.error(`usage: gatectl <command> [--target <path>]
 commands: ${Object.keys(COMMANDS).join(", ") || "(none wired yet)"}`);
-  process.exit(2);
+  await exit(2);
 }
 var code;
 try {
   code = await handler(args);
 } catch (e) {
   console.error(`NOT_EVALUATED: ${e.message}`);
-  process.exit(2);
+  await exit(2);
 }
-await new Promise((resolve) => process.stdout.write("", resolve));
-process.exit(typeof code === "number" ? code : 2);
+await exit(typeof code === "number" ? code : 2);
