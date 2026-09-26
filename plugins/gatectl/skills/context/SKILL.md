@@ -12,6 +12,19 @@ claim. Run the bundled CLI as in the delivery skill: `node <plugin-root>/bin/gat
 For a small, clear edit, skip all of this. Use it when the work spans sessions, has unknowns, or
 has already failed once.
 
+## The owner's goal
+
+`docs/goal.yaml` holds the project goal every session starts from (SessionStart shows it first).
+When there is none, or the owner's intent changed, draft it from the owner's own words — do not
+substitute a narrower goal:
+
+`goal propose --goal <formulation> --owner-words "<verbatim quote>"... --success <criterion>... --out-of-scope <x>...`
+
+Show the owner the draft in plain language and the exact confirmation line it prints
+(`подтверждаю цель G-…`). Only after they send that line, run `goal confirm`. Never write or edit a
+confirmation yourself; a refusal or a "да" is not that message. Status other than `confirmed`
+means the goal is not agreed: say so when you report. Commit docs/goal.yaml separately.
+
 ## Start or resume
 
 Read `work brief` first (SessionStart may already have injected it). Continue from its goal and

@@ -4,8 +4,9 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { readSession, sessionPath } from '../core/plugin-session.mjs'
+import { readGoal, goalStatus, renderGoal, recordPrompt } from '../core/goal.mjs'
 
-export function hookResponse(input, { root, session, next, cli, work = null }) {
+export function hookResponse(input, { root, session, next, cli, work = null, goal = null }) {
   const event = input.hook_event_name
   if (event === 'Stop') {
     if (!session || session.paused || input.permission_mode === 'plan') return {}
@@ -26,6 +27,8 @@ export function hookResponse(input, { root, session, next, cli, work = null }) {
     'Read-only questions and reviews do not enroll a task. Follow the current policy via next --json; never invent a RED test for a policy-only tier.',
     'Only finish (legacy complete) exit 0 permits a completion claim. A blocked task, pause, or bounded Stop continuation is not approval. Preserve user cancellation and existing permission boundaries.',
   ]
+  // The owner's goal first: what every session is for. Its status is what the hook observed.
+  if (event === 'SessionStart' && goal) context.push(goal)
   // Recorded work state is context for continuing, never completion evidence.
   if (event === 'SessionStart' && work?.text) context.push(`Recorded work state (gatectl work brief; context, not evidence):\n${work.text}`)
   else if (event === 'SessionStart' && work?.unavailable) context.push(`gatectl work state unavailable: ${work.unavailable}`)
@@ -51,8 +54,19 @@ export function runPluginHook(input, cliFile) {
       try { next = r.status === 0 ? JSON.parse(r.stdout) : null } catch { /* no answer is not approval */ }
     }
   }
+  // What the owner actually said is recorded before anything else can fail; it is how a later
+  // "the owner confirmed" is checked. Recording never fails the hook.
+  if (input.hook_event_name === 'UserPromptSubmit' && typeof input.prompt === 'string') {
+    try { recordPrompt(root, { text: input.prompt, session: typeof input.session_id === 'string' ? input.session_id : null, at: new Date().toISOString() }) }
+    catch { /* observation is best effort */ }
+  }
+  let goal = null
+  if (input.hook_event_name === 'SessionStart') {
+    try { const g = readGoal(root); if (g) goal = renderGoal(goalStatus(root, g)).slice(0, 1200) }
+    catch (e) { goal = `gatectl owner goal unavailable: ${e.message.split('\n')[0].slice(0, 200)}` }
+  }
   const work = input.hook_event_name === 'SessionStart' ? workBrief(root, cliFile) : null
-  const response = hookResponse(input, { root, session, next, work, cli: `node ${JSON.stringify(cliFile)}` })
+  const response = hookResponse(input, { root, session, next, work, goal, cli: `node ${JSON.stringify(cliFile)}` })
   // An unavailable next result is not an evaluated reminder to memoize.
   if (response.decision !== 'block' || !next) return response
   let signature
@@ -97,7 +111,7 @@ function workBrief(root, cliFile) {
   // The flag is passed up front (where this Node knows it) so the brief never re-executes itself:
   // a grandchild would outlive the timeout.
   const flags = process.allowedNodeEnvironmentFlags.has('--experimental-sqlite') ? ['--experimental-sqlite', '--disable-warning=ExperimentalWarning'] : []
-  const r = spawnSync(process.execPath, [...flags, cliFile, 'work', 'brief', '--max-chars', String(BRIEF_LIMIT), '--target', root],
+  const r = spawnSync(process.execPath, [...flags, cliFile, 'work', 'brief', '--without-owner-goal', '--max-chars', String(BRIEF_LIMIT), '--target', root],
     { cwd: root, encoding: 'utf8', timeout: 3000, maxBuffer: 256 * 1024, env: { ...process.env, GATECTL_WORK_REEXEC: '1' } })
   if (r.error || r.status !== 0) {
     const why = r.error?.code === 'ETIMEDOUT' ? 'timed out' : (r.stderr || '').trim().split('\n')[0] || `exit ${r.status}`

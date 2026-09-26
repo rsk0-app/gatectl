@@ -194,6 +194,12 @@ export function brief(db, root, { work, specGoal }) {
   }
 }
 
+export function emptyBrief(work, specGoal) {
+  return { work, goal: specGoal ?? null, goal_source: specGoal ? "spec intent" : null, done_when: null, next_action: null,
+    checkpoint_at: null, decisions: [], interrupted: [], exhausted: [], blocked: [], stale: [], open_questions: [],
+    conclusions: [], other_work: [] }
+}
+
 const TABLES = {
   questions: { id: "int", work: "str", text: "str", kind: ["technical", "decision"], status: ["open", "answered", "blocked"], by: "str?", created_at: "str", closed_at: "str?" },
   attempts: { id: "int", question_id: "int", work: "str", hypothesis: "str", action: "str", inputs: "inputs", inputs_key: "str", reason: "str?", by: "str?", status: ["planned", "done"], outcome: [null, ...OUTCOMES], result: "str?", remaining: "str?", revisit: "str?", created_at: "str", resolved_at: "str?" },

@@ -7,6 +7,7 @@ import { treeDigest } from "../core/target.mjs"
 import { WorkError, loadSqlite, openStore, orphanCompanion, storePath, worktreeRoot } from "./store.mjs"
 import * as work from "./work.mjs"
 import { renderBrief } from "./brief.mjs"
+import { readGoal, goalStatus } from "../core/goal.mjs"
 
 const USAGE = `usage: gatectl work <command> [--work <id>] [--by <who>] [--target <path>]
   ask "<question>" [--decision]                  record an open question (or a decision needed from the owner)
@@ -20,7 +21,7 @@ const USAGE = `usage: gatectl work <command> [--work <id>] [--by <who>] [--targe
   brief [--json] [--max-chars <n>]               goal, next action, decisions, interrupted/exhausted work, conclusions
   export | import <file> | path`
 
-const BOOLEAN = new Set(["--json", "--decision"])
+const BOOLEAN = new Set(["--json", "--decision", "--without-owner-goal"])
 function parse(args) {
   const flags = {}, positional = []
   for (let i = 0; i < args.length; i++) {
@@ -63,6 +64,11 @@ function reexecWithFlag(args, env) {
   return r.status ?? 2
 }
 
+function ownerGoal(root) {
+  try { const g = readGoal(root); return g ? goalStatus(root, g) : null }
+  catch (e) { return { status: "unreadable", goal: e.message } }
+}
+
 export async function runWork(args, root, env = process.env) {
   try {
     const clean = [...args]
@@ -91,10 +97,14 @@ export async function runWork(args, root, env = process.env) {
         ? "the work store is disabled (GATECTL_WORK_SQLITE=off)"
         : `node:sqlite is not available on Node ${process.versions.node}; the work store needs Node >= 22.13 (or 22.5+ with --experimental-sqlite). Gates are unaffected.`)
     }
-    // Reading never creates a store: an absent one is simply empty.
+    // Reading never creates a store: an absent one is simply empty — but the owner's goal, which
+    // lives in the repository, is still shown.
     if (reading && !fs.existsSync(file) && !orphanCompanion(file)) {
-      if (cmd === "export") console.log(JSON.stringify(work.emptyExport(), null, 2))
-      else if (flags.json) console.log(JSON.stringify(null))
+      if (cmd === "export") { console.log(JSON.stringify(work.emptyExport(), null, 2)); return 0 }
+      const owner = flags["without-owner-goal"] ? null : ownerGoal(top)
+      if (!owner) { if (flags.json) console.log(JSON.stringify(null)); return 0 }
+      const b = { ...work.emptyBrief(workId(top, flags), specGoal(top, workId(top, flags))), owner_goal: owner }
+      console.log(flags.json ? JSON.stringify(b, null, 2) : renderBrief(b, flags["max-chars"] ? Number(flags["max-chars"]) : Infinity))
       return 0
     }
     const db = openStore(top, sqlite, { create: !reading })
@@ -127,6 +137,8 @@ export async function runWork(args, root, env = process.env) {
           return 0
         case "brief": {
           const b = work.brief(db, top, { work: id(), specGoal: specGoal(top, id()) })
+          // The owner's goal comes first. SessionStart shows it itself, so it asks for the brief without.
+          if (!flags["without-owner-goal"]) b.owner_goal = ownerGoal(top)
           if (flags.json) console.log(JSON.stringify(b, null, 2))
           else {
             const max = flags["max-chars"] ? Number(flags["max-chars"]) : Infinity

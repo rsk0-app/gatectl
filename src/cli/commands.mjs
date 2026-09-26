@@ -27,6 +27,7 @@ import { decideCompletion } from "../core/completion.mjs"
 import { testPatch, implementationPatch, judgeRed, judgeGreen } from "../core/replay.mjs"
 import { readSession, writeSession, clientFamily } from "../core/plugin-session.mjs"
 import { runPluginHook } from "./plugin-hook.mjs"
+import { GoalError, readGoal, goalStatus, renderGoal, proposeGoal, confirmGoal, confirmMessage } from "../core/goal.mjs"
 import { cachedRunner, executionContext } from "../core/check-cache.mjs"
 import { configureWorkflow, readableCommand } from "../core/workflow.mjs"
 import { nextStep } from "../core/next.mjs"
@@ -466,6 +467,49 @@ export const COMMANDS = {
   async "ready-to-commit"(args) { return COMMANDS["commit-check"](args) },
   async finish(args) { return COMMANDS.complete(args) },
   async version() { console.log(VERSION); return 0 },
+  // The owner's goal: drafted by an agent, confirmed only by a message the hook saw the owner send.
+  async goal(args) {
+    const root = targetRoot(args)
+    const many = (flag) => args.flatMap((a, i) => (a === flag && i + 1 < args.length ? [args[i + 1]] : []))
+    const one = (flag) => many(flag).at(-1) ?? null
+    try {
+      switch (args[0]) {
+        case "propose": {
+          const g = proposeGoal(root, { goal: one("--goal"), ownerWords: many("--owner-words"), success: many("--success"),
+            outOfScope: many("--out-of-scope"), by: one("--by") ?? "agent" })
+          const s = goalStatus(root, g)
+          console.log(`goal ${s.id} drafted in docs/goal.yaml — not confirmed by the owner`)
+          for (const w of s.owner_words) console.log(`  owner words ${w.observed === "found" ? "found in" : w.observed === "not verifiable" ? "not verifiable against (truncated)" : "NOT found in"} observed prompts: "${w.text}"`)
+          console.log("Show the owner the goal, success criteria and out of scope. To confirm this exact draft they send:")
+          console.log(`  ${confirmMessage(s.id)}`)
+          console.log("then run `gatectl goal confirm`. Commit docs/goal.yaml separately from task changes.")
+          return 0
+        }
+        case "confirm": {
+          const c = confirmGoal(root)
+          console.log(`goal ${c.id.slice(0, 14)}… confirmed by the owner's message at ${c.at}`)
+          console.log("  observed by the gatectl hook on this machine; this is not cryptographic proof")
+          return 0
+        }
+        case "show": {
+          const g = readGoal(root)
+          if (!g) { console.error("NO_GOAL: docs/goal.yaml does not exist; draft one with `gatectl goal propose`"); return 2 }
+          const s = goalStatus(root, g)
+          if (args.includes("--json")) { console.log(JSON.stringify(s, null, 2)); return 0 }
+          console.log(renderGoal(s))
+          for (const w of s.owner_words) console.log(`  owner said: "${w.text}" (${w.observed} in observed prompts)`)
+          console.log("  observation means the gatectl hook saw it; it is not cryptographic proof")
+          return 0
+        }
+        default:
+          console.error("usage: gatectl goal propose --goal <g> --owner-words <quote>... [--success <c>]... [--out-of-scope <x>]... | confirm | show [--json]")
+          return 2
+      }
+    } catch (e) {
+      if (e instanceof GoalError) { console.error(e.message); return e.exit }
+      throw e
+    }
+  },
   // The work store is context for agents, never gate evidence. Imported lazily so that node:sqlite
   // is loaded only here, and no gate path can reach it.
   async work(args) {

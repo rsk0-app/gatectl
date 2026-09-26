@@ -26,7 +26,6 @@ test('release notes describe what 0.17.0 ships', () => {
   expect(start).toBeGreaterThan(-1)
   const section = changelog.slice(start, changelog.indexOf('\n## ', start + 1))
   for (const shipped of ['gatectl work', 'Loop guard', 'context', 'verify', 'review.json']) expect(section, shipped).toContain(shipped)
-  expect(changelog.slice(0, start)).not.toMatch(/^## Unreleased/m)
   expect(fs.readFileSync(path.join(root, 'README.md'), 'utf8')).not.toMatch(/Work context \(unreleased\)/)
 })
 

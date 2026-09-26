@@ -66,7 +66,7 @@ Conflicts resolved with the owner:
 | Stage | Result for the owner | Status |
 |---|---|---|
 | 1 | Work store, loop guard, freshness, `work brief`, SessionStart brief | done in `work-state-brief` |
-| 2 | Owner goal: agent drafts goal/scope/success from the owner's words, owner confirms; confirmation recorded with source | next |
+| 2 | Owner goal: agent drafts goal/scope/success from the owner's words, owner confirms; confirmation recorded with source | done in `owner-goal` |
 | 3 | Capability map (agreed / implementation found / tests exist / tests passed on current version), piloted on ops8 | planned |
 | 4 | Next-step proposals: compare capability map with the goal | planned |
 | 5 | Local code index + architecture map with honest coverage | planned |

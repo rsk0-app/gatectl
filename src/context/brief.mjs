@@ -5,8 +5,11 @@
 // though nothing else was known.
 const MARKER_ROOM = 100
 
+const OWNER_LABEL = { draft: "draft — not confirmed by the owner" }
 export function briefLines(b) {
-  const lines = [`Work: ${b.work}`]
+  const lines = []
+  if (b.owner_goal) lines.push(`Owner goal [${OWNER_LABEL[b.owner_goal.status] ?? b.owner_goal.status}]: ${b.owner_goal.goal}`)
+  lines.push(`Work: ${b.work}`)
   lines.push(b.goal ? `Goal: ${b.goal}${b.goal_source === "spec intent" ? " (from the spec intent; no checkpoint names a goal)" : ""}` : "Goal: not recorded — `gatectl work checkpoint --goal ...`")
   if (b.done_when) lines.push(`Done when: ${b.done_when}`)
   lines.push(b.next_action ? `Next: ${b.next_action}` : "Next: not recorded — `gatectl work checkpoint --next ...`")
@@ -46,7 +49,7 @@ export function renderBrief(b, maxChars = Infinity) {
   const all = lines.join("\n")
   if (all.length <= maxChars) return all
   const budget = Math.max(0, maxChars - MARKER_ROOM)
-  const head = lines.filter((l) => /^(Work|Goal|Done when|Next): /.test(l)).slice(0, HEAD)
+  const head = lines.filter((l) => /^(Owner goal \[[^\]]*\]|Work|Goal|Done when|Next): /.test(l)).slice(0, HEAD + 1)
   const share = Math.max(40, Math.floor(budget / head.length) - 1)
   const kept = head.map((l) => (l.length > share ? l.slice(0, share - 1) + "…" : l))
   let used = kept.join("\n").length

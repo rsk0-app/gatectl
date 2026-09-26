@@ -476,6 +476,14 @@ gatectl work brief                                                     # goal, n
   `STORE_TOO_NEW` and left untouched. `work export` / `work import` back up and restore (import
   only into an empty store, all or nothing). `GATECTL_WORK_SQLITE=off` disables the store.
 
+**The owner's goal.** `gatectl goal propose` drafts `docs/goal.yaml` from the owner's verbatim
+words (goal, success criteria, out of scope) and prints a confirmation line naming the draft's
+full sha256 id. The UserPromptSubmit hook logs owner prompts under the state directory (last 200,
+4000 characters each, mode 0600); `gatectl goal confirm` succeeds only if the owner sent exactly
+`подтверждаю цель G-<id>` (or `confirm goal G-<id>`) after the draft. Any edit to the agreed
+content is a new id and shows as "changed since the owner confirmed it". "Observed" means seen by
+the gatectl hook — not cryptographic proof. SessionStart shows the goal and its status first.
+
 **No gate reads the work store.** `next`, `status`, `commit-check`, `finish` and the Stop hook
 answer identically whatever it holds; `test/work-state.test.mjs` checks both the import graph and
 the behaviour. Every command other than `work` still runs on Node 20.

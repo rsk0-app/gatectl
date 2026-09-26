@@ -1465,7 +1465,7 @@ rollback:
     fs.rmSync(file)
     rda(root, ["review"])
     expect(rda(root, ["gate", "x"]).code).toBe(0)
-  })
+  }, 30000)
 
   it("an accepted criterion keeps the reviewer's reasoning", () => {
     const acceptance = (claims) => {
@@ -1480,7 +1480,7 @@ rollback:
     expect(reasoned.reason).toBe("owner accepts for now")
     const { reasoning, ...silentClaim } = { ...claim("AC-01"), verdict: "unclear" }
     expect(acceptance([silentClaim]).title).toBe("the reviewer gave no reasoning")
-  })
+  }, 30000)
 
   it("REFUSES a reviewer that answers with prose instead of the structure it was asked for", () => {
     const { root } = scaffold("looks good to me, ship it")

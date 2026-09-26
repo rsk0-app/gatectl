@@ -3267,11 +3267,206 @@ var init_target = __esm({
   }
 });
 
+// src/core/goal.mjs
+import fs5 from "node:fs";
+import path6 from "node:path";
+import crypto9 from "node:crypto";
+function goalId(g) {
+  const agreed = { owner_words: g.owner_words ?? [], goal: g.goal ?? "", success: g.success ?? [], out_of_scope: g.out_of_scope ?? [] };
+  return `G-${crypto9.createHash("sha256").update(JSON.stringify(agreed)).digest("hex")}`;
+}
+function confirmationIn(text) {
+  const normalized = String(text).trim().toLowerCase().replace(/\s+/g, " ").replace(/[\s.!…]+$/u, "");
+  const hex = CONFIRM.exec(normalized)?.[1];
+  return hex ? `G-${hex}` : null;
+}
+function appendLine(file, value) {
+  fs5.mkdirSync(path6.dirname(file), { recursive: true, mode: 448 });
+  const fd = fs5.openSync(file, "a", 384);
+  try {
+    fs5.writeSync(fd, JSON.stringify(value) + "\n");
+  } finally {
+    fs5.closeSync(fd);
+  }
+}
+function readLines(file) {
+  let text;
+  try {
+    text = fs5.readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  return text.split("\n").flatMap((line) => {
+    try {
+      return line ? [JSON.parse(line)] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+function rotate(file) {
+  const count = () => {
+    try {
+      return fs5.readFileSync(file, "utf8").split("\n").filter(Boolean).length;
+    } catch {
+      return 0;
+    }
+  };
+  if (count() < GENERATION) return;
+  const lock = `${file}.lock`;
+  for (let tries = 0; ; tries++) {
+    try {
+      fs5.mkdirSync(lock);
+      break;
+    } catch {
+      try {
+        if (Date.now() - fs5.statSync(lock).mtimeMs > 1e4) fs5.rmSync(lock, { recursive: true, force: true });
+      } catch {
+      }
+      if (tries >= 20) return;
+      sleep(10);
+    }
+  }
+  try {
+    if (count() >= GENERATION) fs5.renameSync(file, `${file}.1`);
+  } finally {
+    fs5.rmSync(lock, { recursive: true, force: true });
+  }
+}
+function recordPrompt(root, { text, session, at }, env = process.env) {
+  const value = String(text ?? "");
+  const entry = { at, session: session ?? null, text: value.slice(0, TEXT_LIMIT) };
+  if (value.length > TEXT_LIMIT) entry.truncated = true;
+  appendLine(promptsFile(root, env), entry);
+  const id = confirmationIn(value);
+  if (id) appendLine(confirmationsFile(root, env), { id, at, session: session ?? null });
+  rotate(promptsFile(root, env));
+}
+function readGoal(root) {
+  const file = path6.join(root, GOAL_FILE);
+  if (!fs5.existsSync(file)) return null;
+  let g;
+  try {
+    g = yaml.load(fs5.readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new GoalError("GOAL_INVALID", `${GOAL_FILE} is not valid YAML: ${e.message.split("\n")[0]}`);
+  }
+  const list = (v) => Array.isArray(v) && v.every((x) => typeof x === "string");
+  if (!g || typeof g.goal !== "string" || !list(g.owner_words) || !list(g.success ?? []) || !list(g.out_of_scope ?? []))
+    throw new GoalError("GOAL_INVALID", `${GOAL_FILE} needs goal (text) and owner_words, success, out_of_scope (lists of text)`);
+  return g;
+}
+function goalStatus(root, g, env = process.env) {
+  const id = goalId(g);
+  let status = "draft";
+  if (g.confirmation?.id) {
+    if (g.confirmation.id !== id) status = "changed since the owner confirmed it";
+    else {
+      const seen = readLines(confirmationsFile(root, env)).some((c) => c.id === id && c.at > String(g.drafted_at ?? ""));
+      status = seen ? "confirmed" : "confirmed elsewhere (not verified here)";
+    }
+  }
+  const prompts = readPrompts(root, env);
+  const truncated = prompts.some((p) => p.truncated);
+  const owner_words = g.owner_words.map((q) => ({
+    text: q,
+    observed: prompts.some((p) => squash(String(p.text)).includes(squash(q))) ? "found" : truncated ? "not verifiable" : "not found"
+  }));
+  return {
+    id,
+    status,
+    goal: g.goal,
+    success: g.success ?? [],
+    out_of_scope: g.out_of_scope ?? [],
+    owner_words,
+    drafted_by: g.drafted_by ?? null,
+    drafted_at: g.drafted_at ?? null,
+    confirmation: g.confirmation ?? null
+  };
+}
+function renderGoal(s) {
+  const lines2 = [`Owner goal [${LABEL[s.status] ?? s.status}]: ${s.goal}`];
+  if (s.success.length) lines2.push(`  success: ${s.success.join("; ")}`);
+  if (s.out_of_scope.length) lines2.push(`  out of scope: ${s.out_of_scope.join("; ")}`);
+  if (s.status !== "confirmed" && s.status !== "confirmed elsewhere (not verified here)")
+    lines2.push(`  the owner confirms this exact draft by sending: ${confirmMessage(s.id)}`);
+  return lines2.join("\n");
+}
+function proposeGoal(root, { goal, ownerWords, success, outOfScope, by }) {
+  if (!goal?.trim()) throw new GoalError("USAGE", "goal propose needs --goal");
+  if (!ownerWords.length || ownerWords.some((w) => !w.trim())) throw new GoalError("USAGE", "goal propose needs the owner's own words: --owner-words <verbatim quote> (repeatable)");
+  const g = {
+    version: 1,
+    owner_words: ownerWords,
+    goal: goal.trim(),
+    success,
+    out_of_scope: outOfScope,
+    drafted_by: by,
+    drafted_at: (/* @__PURE__ */ new Date()).toISOString(),
+    confirmation: null
+  };
+  const file = path6.join(root, GOAL_FILE);
+  fs5.mkdirSync(path6.dirname(file), { recursive: true });
+  const header = "# docs/goal.yaml \u2014 the owner's goal, managed by `gatectl goal`. Its id is the digest of owner_words,\n# goal, success and out_of_scope: editing any of them needs a new confirmation from the owner.\n";
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs5.writeFileSync(tmp, header + yaml.dump(g, { lineWidth: 110 }));
+  fs5.renameSync(tmp, file);
+  return g;
+}
+function confirmGoal(root, env = process.env) {
+  const g = readGoal(root);
+  if (!g) throw new GoalError("NO_GOAL", `${GOAL_FILE} does not exist; draft one with \`gatectl goal propose\``);
+  const id = goalId(g);
+  const seen = readLines(confirmationsFile(root, env)).filter((c) => c.id === id && c.at > String(g.drafted_at ?? ""));
+  if (!seen.length)
+    throw new GoalError("OWNER_CONFIRMATION_NOT_OBSERVED", `the gatectl hook has not seen the owner send "${confirmMessage(id)}" since this draft was written`, 1);
+  g.confirmation = { id, at: seen[0].at };
+  const file = path6.join(root, GOAL_FILE);
+  const text = fs5.readFileSync(file, "utf8");
+  const header = text.match(/^(#.*\n)*/)[0];
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs5.writeFileSync(tmp, header + yaml.dump(g, { lineWidth: 110 }));
+  fs5.renameSync(tmp, file);
+  return g.confirmation;
+}
+var GOAL_FILE, PROMPT_LIMIT, TEXT_LIMIT, GoalError, dirs, dirOf, promptsFile, confirmationsFile, CONFIRM, sleep, GENERATION, readPrompts, squash, LABEL, confirmMessage;
+var init_goal = __esm({
+  "src/core/goal.mjs"() {
+    init_js_yaml();
+    init_authority();
+    GOAL_FILE = "docs/goal.yaml";
+    PROMPT_LIMIT = 200;
+    TEXT_LIMIT = 4e3;
+    GoalError = class extends Error {
+      constructor(code2, message, exit = 2) {
+        super(`${code2}: ${message}`);
+        this.code = code2;
+        this.exit = exit;
+      }
+    };
+    dirs = /* @__PURE__ */ new Map();
+    dirOf = (root, env) => {
+      const key = `${root}\0${env.GATECTL_STATE_DIR ?? ""}\0${env.HOME ?? ""}`;
+      if (!dirs.has(key)) dirs.set(key, stateDir(root, env));
+      return dirs.get(key);
+    };
+    promptsFile = (root, env) => path6.join(dirOf(root, env), "owner-prompts.jsonl");
+    confirmationsFile = (root, env) => path6.join(dirOf(root, env), "owner-confirmations.jsonl");
+    CONFIRM = /^(?:подтверждаю цель|confirm goal) g-([0-9a-f]{64})$/;
+    sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    GENERATION = PROMPT_LIMIT / 2;
+    readPrompts = (root, env) => [...readLines(`${promptsFile(root, env)}.1`), ...readLines(promptsFile(root, env))].slice(-PROMPT_LIMIT);
+    squash = (s) => s.replace(/\s+/g, " ").trim();
+    LABEL = { draft: "draft \u2014 not confirmed by the owner" };
+    confirmMessage = (id) => `\u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u044E \u0446\u0435\u043B\u044C ${id}`;
+  }
+});
+
 // src/context/store.mjs
-import fs7 from "node:fs";
+import fs8 from "node:fs";
 import os4 from "node:os";
-import path8 from "node:path";
-import crypto10 from "node:crypto";
+import path9 from "node:path";
+import crypto11 from "node:crypto";
 import { execFileSync as execFileSync2 } from "node:child_process";
 async function loadSqlite(env = process.env) {
   if (env.GATECTL_WORK_SQLITE === "off") return null;
@@ -3288,35 +3483,35 @@ async function loadSqlite(env = process.env) {
 }
 function worktreeRoot(root) {
   try {
-    return fs7.realpathSync(execFileSync2(
+    return fs8.realpathSync(execFileSync2(
       "git",
       ["rev-parse", "--show-toplevel"],
       { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
     ).trim());
   } catch {
-    return fs7.realpathSync(root);
+    return fs8.realpathSync(root);
   }
 }
 function storePath(root) {
   const top = worktreeRoot(root);
-  const key = crypto10.createHash("sha256").update(top).digest("hex").slice(0, 16);
-  return path8.join(stateDir(top), "worktrees", key, "work.db");
+  const key = crypto11.createHash("sha256").update(top).digest("hex").slice(0, 16);
+  return path9.join(stateDir(top), "worktrees", key, "work.db");
 }
 function validateExisting(file, sqlite) {
   let size;
   try {
-    size = fs7.statSync(file).size;
+    size = fs8.statSync(file).size;
   } catch (e) {
     throw new WorkError("STORE_UNREADABLE", `${file} cannot be read (${e.code ?? e.message}); it was left untouched.`);
   }
   if (size === 0) throw new WorkError("STORE_UNREADABLE", `${file} is empty (truncated?). It was left untouched; restore it from a \`gatectl work export\`, or move it aside yourself to start over.`);
-  const dir = fs7.mkdtempSync(path8.join(os4.tmpdir(), "gatectl-work-check-"));
+  const dir = fs8.mkdtempSync(path9.join(os4.tmpdir(), "gatectl-work-check-"));
   try {
-    const copy = path8.join(dir, "work.db");
+    const copy = path9.join(dir, "work.db");
     let db;
     try {
-      fs7.copyFileSync(file, copy);
-      if (fs7.existsSync(`${file}-wal`)) fs7.copyFileSync(`${file}-wal`, `${copy}-wal`);
+      fs8.copyFileSync(file, copy);
+      if (fs8.existsSync(`${file}-wal`)) fs8.copyFileSync(`${file}-wal`, `${copy}-wal`);
       db = new sqlite.DatabaseSync(copy);
       const check = db.prepare("PRAGMA quick_check").get();
       if (Object.values(check ?? {})[0] !== "ok") throw new Error(`integrity check: ${JSON.stringify(check)}`);
@@ -3334,7 +3529,7 @@ function validateExisting(file, sqlite) {
       }
     }
   } finally {
-    fs7.rmSync(dir, { recursive: true, force: true });
+    fs8.rmSync(dir, { recursive: true, force: true });
   }
 }
 function transaction(db, fn) {
@@ -3353,12 +3548,12 @@ function transaction(db, fn) {
 }
 function openStore(root, sqlite, { create }) {
   const file = storePath(root);
-  const exists = fs7.existsSync(file);
+  const exists = fs8.existsSync(file);
   if (!exists && orphanCompanion(file))
     throw new WorkError("STORE_UNREADABLE", `${file} is missing but ${orphanCompanion(file)} remains; the store was left untouched.`);
   if (!exists && !create) return null;
   if (exists) validateExisting(file, sqlite);
-  else fs7.mkdirSync(path8.dirname(file), { recursive: true, mode: 448 });
+  else fs8.mkdirSync(path9.dirname(file), { recursive: true, mode: 448 });
   let db;
   try {
     db = new sqlite.DatabaseSync(file);
@@ -3376,7 +3571,7 @@ function openStore(root, sqlite, { create }) {
     if (version < SCHEMA_VERSION2) db.exec(`PRAGMA user_version = ${SCHEMA_VERSION2}`);
   });
   if (!exists) try {
-    fs7.chmodSync(file, 384);
+    fs8.chmodSync(file, 384);
   } catch {
   }
   return db;
@@ -3418,47 +3613,47 @@ var init_store = __esm({
    CREATE INDEX attempts_question ON attempts(question_id);`
     ];
     if (MIGRATIONS.length !== SCHEMA_VERSION2) throw new Error("work store migrations out of step with SCHEMA_VERSION");
-    orphanCompanion = (file) => ["-wal", "-shm", "-journal"].map((s) => file + s).find((f) => fs7.existsSync(f)) ?? null;
+    orphanCompanion = (file) => ["-wal", "-shm", "-journal"].map((s) => file + s).find((f) => fs8.existsSync(f)) ?? null;
   }
 });
 
 // src/context/inputs.mjs
-import fs8 from "node:fs";
-import path9 from "node:path";
-import crypto11 from "node:crypto";
+import fs9 from "node:fs";
+import path10 from "node:path";
+import crypto12 from "node:crypto";
 function insideRoot(realRoot, real) {
-  return real === realRoot || real.startsWith(realRoot + path9.sep);
+  return real === realRoot || real.startsWith(realRoot + path10.sep);
 }
 function realLocation(p) {
   for (let hops = 0; hops < 40; hops++) {
     let probe = p;
-    while (!lexists(probe) && probe !== path9.dirname(probe)) probe = path9.dirname(probe);
-    const rest = path9.relative(probe, p);
-    if (fs8.lstatSync(probe).isSymbolicLink()) {
-      p = path9.resolve(path9.dirname(probe), fs8.readlinkSync(probe), rest);
+    while (!lexists(probe) && probe !== path10.dirname(probe)) probe = path10.dirname(probe);
+    const rest = path10.relative(probe, p);
+    if (fs9.lstatSync(probe).isSymbolicLink()) {
+      p = path10.resolve(path10.dirname(probe), fs9.readlinkSync(probe), rest);
       continue;
     }
-    return path9.join(fs8.realpathSync(probe), rest);
+    return path10.join(fs9.realpathSync(probe), rest);
   }
   throw new WorkError("INPUT_OUTSIDE_WORKTREE", `${p} has too many levels of symbolic links`);
 }
 function resolveInput(root, input) {
-  const realRoot = fs8.realpathSync(root);
-  const abs = path9.resolve(realRoot, input);
-  const rel = path9.relative(realRoot, abs);
-  if (!rel || rel.startsWith("..") || path9.isAbsolute(rel))
+  const realRoot = fs9.realpathSync(root);
+  const abs = path10.resolve(realRoot, input);
+  const rel = path10.relative(realRoot, abs);
+  if (!rel || rel.startsWith("..") || path10.isAbsolute(rel))
     throw new WorkError("INPUT_OUTSIDE_WORKTREE", `${input} is not a file inside the worktree ${realRoot}`);
   const real = realLocation(abs);
   if (!insideRoot(realRoot, real))
     throw new WorkError("INPUT_OUTSIDE_WORKTREE", `${input} resolves outside the worktree (${real})`);
-  if (fs8.existsSync(abs) && fs8.statSync(abs).isDirectory())
+  if (fs9.existsSync(abs) && fs9.statSync(abs).isDirectory())
     throw new WorkError("INPUT_IS_DIRECTORY", `${input} is a directory; name the files the conclusion depends on`);
-  return rel.split(path9.sep).join("/");
+  return rel.split(path10.sep).join("/");
 }
 function fingerprint(root, rel) {
-  const file = path9.join(root, rel);
+  const file = path10.join(root, rel);
   try {
-    return `sha256:${crypto11.createHash("sha256").update(fs8.readFileSync(file)).digest("hex")}`;
+    return `sha256:${crypto12.createHash("sha256").update(fs9.readFileSync(file)).digest("hex")}`;
   } catch (e) {
     if (e.code === "ENOENT" || e.code === "ENOTDIR") return "absent";
     if (e.code === "EISDIR") return "unreadable";
@@ -3489,7 +3684,7 @@ var init_inputs = __esm({
     init_store();
     lexists = (p) => {
       try {
-        fs8.lstatSync(p);
+        fs9.lstatSync(p);
         return true;
       } catch {
         return false;
@@ -3659,6 +3854,24 @@ function brief(db, root, { work, specGoal: specGoal2 }) {
     other_work: other
   };
 }
+function emptyBrief(work, specGoal2) {
+  return {
+    work,
+    goal: specGoal2 ?? null,
+    goal_source: specGoal2 ? "spec intent" : null,
+    done_when: null,
+    next_action: null,
+    checkpoint_at: null,
+    decisions: [],
+    interrupted: [],
+    exhausted: [],
+    blocked: [],
+    stale: [],
+    open_questions: [],
+    conclusions: [],
+    other_work: []
+  };
+}
 function emptyExport() {
   return {
     format: EXPORT_FORMAT,
@@ -3771,7 +3984,9 @@ var init_work = __esm({
 
 // src/context/brief.mjs
 function briefLines(b) {
-  const lines2 = [`Work: ${b.work}`];
+  const lines2 = [];
+  if (b.owner_goal) lines2.push(`Owner goal [${OWNER_LABEL[b.owner_goal.status] ?? b.owner_goal.status}]: ${b.owner_goal.goal}`);
+  lines2.push(`Work: ${b.work}`);
   lines2.push(b.goal ? `Goal: ${b.goal}${b.goal_source === "spec intent" ? " (from the spec intent; no checkpoint names a goal)" : ""}` : "Goal: not recorded \u2014 `gatectl work checkpoint --goal ...`");
   if (b.done_when) lines2.push(`Done when: ${b.done_when}`);
   lines2.push(b.next_action ? `Next: ${b.next_action}` : "Next: not recorded \u2014 `gatectl work checkpoint --next ...`");
@@ -3813,7 +4028,7 @@ function renderBrief(b, maxChars = Infinity) {
   const all = lines2.join("\n");
   if (all.length <= maxChars) return all;
   const budget = Math.max(0, maxChars - MARKER_ROOM);
-  const head = lines2.filter((l) => /^(Work|Goal|Done when|Next): /.test(l)).slice(0, HEAD);
+  const head = lines2.filter((l) => /^(Owner goal \[[^\]]*\]|Work|Goal|Done when|Next): /.test(l)).slice(0, HEAD + 1);
   const share = Math.max(40, Math.floor(budget / head.length) - 1);
   const kept = head.map((l) => l.length > share ? l.slice(0, share - 1) + "\u2026" : l);
   let used = kept.join("\n").length;
@@ -3829,10 +4044,11 @@ function renderBrief(b, maxChars = Infinity) {
   return `${kept.join("\n")}
 \u2026 truncated: ${dropped} more line(s) \u2014 run \`gatectl work brief\` for the full view`.slice(0, maxChars);
 }
-var MARKER_ROOM, HEAD;
+var MARKER_ROOM, OWNER_LABEL, HEAD;
 var init_brief = __esm({
   "src/context/brief.mjs"() {
     MARKER_ROOM = 100;
+    OWNER_LABEL = { draft: "draft \u2014 not confirmed by the owner" };
     HEAD = 4;
   }
 });
@@ -3842,8 +4058,8 @@ var cli_exports = {};
 __export(cli_exports, {
   runWork: () => runWork
 });
-import fs9 from "node:fs";
-import path10 from "node:path";
+import fs10 from "node:fs";
+import path11 from "node:path";
 import { spawnSync as spawnSync3 } from "node:child_process";
 function parse(args2) {
   const flags = {}, positional = [];
@@ -3868,7 +4084,7 @@ function workId(root, flags) {
   const explicit = flags.work;
   const active = (() => {
     try {
-      return fs9.readFileSync(path10.join(root, "docs/specs/ACTIVE"), "utf8").trim();
+      return fs10.readFileSync(path11.join(root, "docs/specs/ACTIVE"), "utf8").trim();
     } catch {
       return null;
     }
@@ -3879,7 +4095,7 @@ function workId(root, flags) {
 }
 function specGoal(root, id) {
   try {
-    const intent = yaml.load(fs9.readFileSync(path10.join(root, "docs/specs", id, "spec.yaml"), "utf8"))?.intent;
+    const intent = yaml.load(fs10.readFileSync(path11.join(root, "docs/specs", id, "spec.yaml"), "utf8"))?.intent;
     if (typeof intent !== "string" || /^\s*(REPLACE|Зачем сейчас)/.test(intent)) return null;
     const first = intent.trim().split(/\n\s*\n/)[0].replace(/\s+/g, " ");
     return first.length > 300 ? first.slice(0, 299) + "\u2026" : first;
@@ -3896,6 +4112,14 @@ function reexecWithFlag(args2, env) {
     { stdio: "inherit", env: { ...env, GATECTL_WORK_REEXEC: "1" } }
   );
   return r.status ?? 2;
+}
+function ownerGoal(root) {
+  try {
+    const g = readGoal(root);
+    return g ? goalStatus(root, g) : null;
+  } catch (e) {
+    return { status: "unreadable", goal: e.message };
+  }
 }
 async function runWork(args2, root, env = process.env) {
   try {
@@ -3919,7 +4143,7 @@ async function runWork(args2, root, env = process.env) {
     if (cmd2 === "import") {
       if (!positional[0]) throw new WorkError("USAGE", "work import needs a file");
       try {
-        importData = JSON.parse(fs9.readFileSync(path10.resolve(positional[0]), "utf8"));
+        importData = JSON.parse(fs10.readFileSync(path11.resolve(positional[0]), "utf8"));
       } catch (e) {
         throw new WorkError("IMPORT_INVALID", `cannot read ${positional[0]}: ${e.message}`);
       }
@@ -3931,9 +4155,18 @@ async function runWork(args2, root, env = process.env) {
       if (code2 !== null) return code2;
       throw new WorkError("SQLITE_UNAVAILABLE", env.GATECTL_WORK_SQLITE === "off" ? "the work store is disabled (GATECTL_WORK_SQLITE=off)" : `node:sqlite is not available on Node ${process.versions.node}; the work store needs Node >= 22.13 (or 22.5+ with --experimental-sqlite). Gates are unaffected.`);
     }
-    if (reading && !fs9.existsSync(file) && !orphanCompanion(file)) {
-      if (cmd2 === "export") console.log(JSON.stringify(emptyExport(), null, 2));
-      else if (flags.json) console.log(JSON.stringify(null));
+    if (reading && !fs10.existsSync(file) && !orphanCompanion(file)) {
+      if (cmd2 === "export") {
+        console.log(JSON.stringify(emptyExport(), null, 2));
+        return 0;
+      }
+      const owner = flags["without-owner-goal"] ? null : ownerGoal(top);
+      if (!owner) {
+        if (flags.json) console.log(JSON.stringify(null));
+        return 0;
+      }
+      const b = { ...emptyBrief(workId(top, flags), specGoal(top, workId(top, flags))), owner_goal: owner };
+      console.log(flags.json ? JSON.stringify(b, null, 2) : renderBrief(b, flags["max-chars"] ? Number(flags["max-chars"]) : Infinity));
       return 0;
     }
     const db = openStore(top, sqlite, { create: !reading });
@@ -3982,6 +4215,7 @@ async function runWork(args2, root, env = process.env) {
           return 0;
         case "brief": {
           const b = brief(db, top, { work: id(), specGoal: specGoal(top, id()) });
+          if (!flags["without-owner-goal"]) b.owner_goal = ownerGoal(top);
           if (flags.json) console.log(JSON.stringify(b, null, 2));
           else {
             const max = flags["max-chars"] ? Number(flags["max-chars"]) : Infinity;
@@ -4020,6 +4254,7 @@ var init_cli = __esm({
     init_store();
     init_work();
     init_brief();
+    init_goal();
     USAGE = `usage: gatectl work <command> [--work <id>] [--by <who>] [--target <path>]
   ask "<question>" [--decision]                  record an open question (or a decision needed from the owner)
   try Q-n --hypothesis <h> --action <a> [--input <file>]... [--reason <why>]
@@ -4031,16 +4266,16 @@ var init_cli = __esm({
   checkpoint --next <action> [--goal <g>] [--done-when <c>] [--summary <s>]
   brief [--json] [--max-chars <n>]               goal, next action, decisions, interrupted/exhausted work, conclusions
   export | import <file> | path`;
-    BOOLEAN = /* @__PURE__ */ new Set(["--json", "--decision"]);
+    BOOLEAN = /* @__PURE__ */ new Set(["--json", "--decision", "--without-owner-goal"]);
   }
 });
 
 // src/cli/commands.mjs
 init_js_yaml();
 init_target();
-import fs10 from "node:fs";
-import crypto12 from "node:crypto";
-import path11 from "node:path";
+import fs11 from "node:fs";
+import crypto13 from "node:crypto";
+import path12 from "node:path";
 import { fileURLToPath } from "node:url";
 import os5 from "node:os";
 import { execSync as execSync3, spawnSync as spawnSync4 } from "node:child_process";
@@ -4406,8 +4641,8 @@ function globToRegExp(glob) {
   const re = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*\//g, "").replace(/\*\*/g, "").replace(/\*/g, "[^/]*").replace(/\u0001/g, "(?:.*/)?").replace(/\u0002/g, ".*");
   return new RegExp(`^${re}$`);
 }
-function matchesAny(path12, globs) {
-  return (globs ?? []).some((g) => globToRegExp(g).test(path12));
+function matchesAny(path13, globs) {
+  return (globs ?? []).some((g) => globToRegExp(g).test(path13));
 }
 var ORDER = ["A", "B", "C"];
 function tierOf(changedPaths2, policy) {
@@ -4764,14 +4999,14 @@ var SEVERE2 = /* @__PURE__ */ new Set(["critical", "high"]);
 var VERDICTS = /* @__PURE__ */ new Set(["implemented", "not_implemented", "unclear"]);
 var FINDING_ID = /^X-\d{3}$/;
 var isStr = (v) => typeof v === "string" && v.trim().length > 0;
-function verifyCitation(citation, readLines) {
+function verifyCitation(citation, readLines2) {
   if (!isStr(citation?.file)) return { ok: false, reason: "citation names no file" };
   const start = Number(citation.start_line);
   const end = Number(citation.end_line);
   if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start)
     return { ok: false, reason: `${citation.file}: line span ${citation.start_line}-${citation.end_line} is not a range` };
   if (!isStr(citation.quote)) return { ok: false, reason: `${citation.file}:${start}: citation quotes nothing` };
-  const lines2 = readLines(citation.file);
+  const lines2 = readLines2(citation.file);
   if (lines2 === null) return { ok: false, reason: `${citation.file}: no such file in this tree` };
   if (start > lines2.length) return { ok: false, reason: `${citation.file}: cites line ${start}, the file has ${lines2.length}` };
   const quoted = citation.quote.replace(/\r/g, "").replace(/\s+$/, "").split("\n");
@@ -4827,7 +5062,7 @@ function validateReview(review) {
   return { ok: errors.length === 0, errors };
 }
 var reviewDigest = (review) => crypto7.createHash("sha256").update(JSON.stringify(review)).digest("hex");
-function gateX({ review, compiled, tree, changed = [], implementer, acceptances = [], readLines }) {
+function gateX({ review, compiled, tree, changed = [], implementer, acceptances = [], readLines: readLines2 }) {
   if (!changed.length) return { status: "NOT_EVALUATED", reasons: ["empty diff \u2014 nothing to review"] };
   if (!review) return { status: "NOT_EVALUATED", reasons: ["no cross-model review recorded \u2014 run `gatectl review`"] };
   const shape = validateReview(review);
@@ -4856,7 +5091,7 @@ function gateX({ review, compiled, tree, changed = [], implementer, acceptances 
   const verified = [];
   for (const claim of review.claims ?? []) {
     for (const citation of claim.citations ?? []) {
-      const r = verifyCitation(citation, readLines);
+      const r = verifyCitation(citation, readLines2);
       if (!r.ok) {
         reasons.push(`${claim.target}: ${r.reason}`);
         continue;
@@ -5177,10 +5412,10 @@ function resolveMemoryConfig({ policy, env = {}, repoName }) {
     }
   };
 }
-async function post({ config, fetchImpl, path: path12, body: body2, timeoutMs }) {
+async function post({ config, fetchImpl, path: path13, body: body2, timeoutMs }) {
   let response;
   try {
-    response = await fetchImpl(`${config.endpoint}${path12}`, {
+    response = await fetchImpl(`${config.endpoint}${path13}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
@@ -5193,17 +5428,17 @@ async function post({ config, fetchImpl, path: path12, body: body2, timeoutMs })
   } catch (e) {
     const c = e.cause;
     const reason = c?.message || c?.code || c?.errors?.[0]?.message || "";
-    return { ok: false, detail: `${config.endpoint}${path12}: ${e.message}${reason ? ` (${reason})` : ""}` };
+    return { ok: false, detail: `${config.endpoint}${path13}: ${e.message}${reason ? ` (${reason})` : ""}` };
   }
-  if (!response.ok) return { ok: false, detail: `${path12}: HTTP ${response.status}` };
+  if (!response.ok) return { ok: false, detail: `${path13}: HTTP ${response.status}` };
   let envelope;
   try {
     envelope = await response.json();
   } catch (e) {
-    return { ok: false, detail: `${path12}: unreadable response (${e.message})` };
+    return { ok: false, detail: `${path13}: unreadable response (${e.message})` };
   }
   if (envelope?.code !== 0)
-    return { ok: false, detail: `${path12}: code ${envelope?.code} \u2014 ${envelope?.message ?? "no message"}` };
+    return { ok: false, detail: `${path13}: code ${envelope?.code} \u2014 ${envelope?.message ?? "no message"}` };
   return { ok: true, data: envelope.data ?? {} };
 }
 async function ensureWiki({ config, fetchImpl, timeoutMs }) {
@@ -5479,11 +5714,12 @@ function clientFamily(model) {
 }
 
 // src/cli/plugin-hook.mjs
-import fs5 from "node:fs";
-import path6 from "node:path";
+import fs6 from "node:fs";
+import path7 from "node:path";
 import os3 from "node:os";
 import { execFileSync, spawnSync as spawnSync2 } from "node:child_process";
-function hookResponse(input, { root, session, next, cli, work = null }) {
+init_goal();
+function hookResponse(input, { root, session, next, cli, work = null, goal = null }) {
   const event = input.hook_event_name;
   if (event === "Stop") {
     if (!session || session.paused || input.permission_mode === "plan") return {};
@@ -5502,6 +5738,7 @@ function hookResponse(input, { root, session, next, cli, work = null }) {
     "Read-only questions and reviews do not enroll a task. Follow the current policy via next --json; never invent a RED test for a policy-only tier.",
     "Only finish (legacy complete) exit 0 permits a completion claim. A blocked task, pause, or bounded Stop continuation is not approval. Preserve user cancellation and existing permission boundaries."
   ];
+  if (event === "SessionStart" && goal) context.push(goal);
   if (event === "SessionStart" && work?.text) context.push(`Recorded work state (gatectl work brief; context, not evidence):
 ${work.text}`);
   else if (event === "SessionStart" && work?.unavailable) context.push(`gatectl work state unavailable: ${work.unavailable}`);
@@ -5515,7 +5752,7 @@ function runPluginHook(input, cliFile) {
   } catch {
     return {};
   }
-  if (!fs5.existsSync(path6.join(root, ".gatectl/policy.yaml"))) return {};
+  if (!fs6.existsSync(path7.join(root, ".gatectl/policy.yaml"))) return {};
   let session = null, next = null;
   if (input.session_id) {
     try {
@@ -5525,7 +5762,7 @@ function runPluginHook(input, cliFile) {
     }
   }
   if (input.hook_event_name === "Stop" && session && !session.paused) {
-    const active = fs5.existsSync(path6.join(root, "docs/specs/ACTIVE")) ? fs5.readFileSync(path6.join(root, "docs/specs/ACTIVE"), "utf8").trim() : null;
+    const active = fs6.existsSync(path7.join(root, "docs/specs/ACTIVE")) ? fs6.readFileSync(path7.join(root, "docs/specs/ACTIVE"), "utf8").trim() : null;
     if (active !== session.slug) next = { state: "BLOCKED", why: "the active feature changed since this session enrolled; resume the correct task explicitly" };
     else {
       const r = spawnSync2(process.execPath, [cliFile, "next", "--recorded-completion", "--json", "--target", root], { cwd: root, encoding: "utf8", timeout: 1e4, maxBuffer: 1024 * 1024 });
@@ -5535,8 +5772,23 @@ function runPluginHook(input, cliFile) {
       }
     }
   }
+  if (input.hook_event_name === "UserPromptSubmit" && typeof input.prompt === "string") {
+    try {
+      recordPrompt(root, { text: input.prompt, session: typeof input.session_id === "string" ? input.session_id : null, at: (/* @__PURE__ */ new Date()).toISOString() });
+    } catch {
+    }
+  }
+  let goal = null;
+  if (input.hook_event_name === "SessionStart") {
+    try {
+      const g = readGoal(root);
+      if (g) goal = renderGoal(goalStatus(root, g)).slice(0, 1200);
+    } catch (e) {
+      goal = `gatectl owner goal unavailable: ${e.message.split("\n")[0].slice(0, 200)}`;
+    }
+  }
   const work = input.hook_event_name === "SessionStart" ? workBrief(root, cliFile) : null;
-  const response = hookResponse(input, { root, session, next, work, cli: `node ${JSON.stringify(cliFile)}` });
+  const response = hookResponse(input, { root, session, next, work, goal, cli: `node ${JSON.stringify(cliFile)}` });
   if (response.decision !== "block" || !next) return response;
   let signature;
   try {
@@ -5550,25 +5802,25 @@ function runPluginHook(input, cliFile) {
       return { systemMessage: "gatectl session changed during the Stop check; completion is not established. Re-read task state." };
     }
     const sessionFile = sessionPath(root, input.session_id);
-    const dir = path6.join(path6.dirname(sessionFile), "reminders");
-    const file = path6.join(dir, path6.basename(sessionFile));
+    const dir = path7.join(path7.dirname(sessionFile), "reminders");
+    const file = path7.join(dir, path7.basename(sessionFile));
     let prior = null;
     try {
-      prior = JSON.parse(fs5.readFileSync(file, "utf8"));
+      prior = JSON.parse(fs6.readFileSync(file, "utf8"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
     if (prior?.signature === signature) {
       return { systemMessage: `gatectl task remains incomplete: ${next?.why ?? "state could not be evaluated"}. ${next?.next_command ? `Next: ${next.next_command}. ` : ""}A reminder was already issued for this unchanged candidate. Continue authorized work; only finish exit 0 establishes completion.` };
     }
-    fs5.mkdirSync(dir, { recursive: true });
+    fs6.mkdirSync(dir, { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
     try {
-      fs5.writeFileSync(tmp, JSON.stringify({ signature }) + "\n", { mode: 384 });
-      fs5.renameSync(tmp, file);
+      fs6.writeFileSync(tmp, JSON.stringify({ signature }) + "\n", { mode: 384 });
+      fs6.renameSync(tmp, file);
     } finally {
       try {
-        fs5.rmSync(tmp, { force: true });
+        fs6.rmSync(tmp, { force: true });
       } catch {
       }
     }
@@ -5582,7 +5834,7 @@ function workBrief(root, cliFile) {
   const flags = process.allowedNodeEnvironmentFlags.has("--experimental-sqlite") ? ["--experimental-sqlite", "--disable-warning=ExperimentalWarning"] : [];
   const r = spawnSync2(
     process.execPath,
-    [...flags, cliFile, "work", "brief", "--max-chars", String(BRIEF_LIMIT), "--target", root],
+    [...flags, cliFile, "work", "brief", "--without-owner-goal", "--max-chars", String(BRIEF_LIMIT), "--target", root],
     { cwd: root, encoding: "utf8", timeout: 3e3, maxBuffer: 256 * 1024, env: { ...process.env, GATECTL_WORK_REEXEC: "1" } }
   );
   if (r.error || r.status !== 0) {
@@ -5594,8 +5846,8 @@ function workBrief(root, cliFile) {
 }
 function reminderSignature(root, session) {
   const deadline = Date.now() + 4e3;
-  const dir = fs5.mkdtempSync(path6.join(os3.tmpdir(), "gatectl-reminder-"));
-  const index = path6.join(dir, "index");
+  const dir = fs6.mkdtempSync(path7.join(os3.tmpdir(), "gatectl-reminder-"));
+  const index = path7.join(dir, "index");
   const env = { ...process.env, GIT_INDEX_FILE: index };
   const git2 = (args2, commandEnv = process.env) => {
     const remaining = deadline - Date.now();
@@ -5610,8 +5862,8 @@ function reminderSignature(root, session) {
     }).trim();
   };
   try {
-    const actualIndex = path6.resolve(root, git2(["rev-parse", "--git-path", "index"]));
-    if (fs5.existsSync(actualIndex)) fs5.copyFileSync(actualIndex, index);
+    const actualIndex = path7.resolve(root, git2(["rev-parse", "--git-path", "index"]));
+    if (fs6.existsSync(actualIndex)) fs6.copyFileSync(actualIndex, index);
     else git2(["read-tree", "HEAD"], env);
     const staged = git2(["write-tree"], env);
     git2(["read-tree", "HEAD"], env);
@@ -5619,46 +5871,49 @@ function reminderSignature(root, session) {
     const working = git2(["write-tree"], env);
     return JSON.stringify([session.slug, session.at, staged, working]);
   } finally {
-    fs5.rmSync(dir, { recursive: true, force: true });
+    fs6.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+// src/cli/commands.mjs
+init_goal();
 
 // src/core/check-cache.mjs
 init_target();
 init_authority();
-import fs6 from "node:fs";
-import path7 from "node:path";
-import crypto9 from "node:crypto";
-var hash = (value) => crypto9.createHash("sha256").update(canonical(value)).digest("hex");
+import fs7 from "node:fs";
+import path8 from "node:path";
+import crypto10 from "node:crypto";
+var hash = (value) => crypto10.createHash("sha256").update(canonical(value)).digest("hex");
 function executionContext(root, policy, env = process.env) {
   const deps = [], seen = /* @__PURE__ */ new Set();
   function walk(file, resolved) {
     let real, s;
     if (resolved === void 0) {
-      if (!fs6.existsSync(file)) return;
-      real = fs6.realpathSync(file);
-      s = fs6.statSync(real);
+      if (!fs7.existsSync(file)) return;
+      real = fs7.realpathSync(file);
+      s = fs7.statSync(real);
     } else {
       try {
-        s = fs6.lstatSync(resolved);
+        s = fs7.lstatSync(resolved);
       } catch {
         return;
       }
       real = resolved;
       if (s.isSymbolicLink()) {
-        if (!fs6.existsSync(resolved)) return;
-        real = fs6.realpathSync(resolved);
-        s = fs6.statSync(real);
+        if (!fs7.existsSync(resolved)) return;
+        real = fs7.realpathSync(resolved);
+        s = fs7.statSync(real);
       }
     }
     if (seen.has(real)) return;
     seen.add(real);
     deps.push([file, real, s.size, s.mtimeMs, s.ctimeMs, s.mode]);
-    if (s.isDirectory()) for (const name of fs6.readdirSync(real).sort())
-      walk(path7.join(file, name), path7.join(real, name));
+    if (s.isDirectory()) for (const name of fs7.readdirSync(real).sort())
+      walk(path8.join(file, name), path8.join(real, name));
   }
-  for (const dir of policy.workflow?.dependency_paths ?? ["node_modules", ".venv"]) walk(path7.resolve(root, dir));
-  for (const file of policy.workflow?.input_paths ?? [".env", ".env.local", ".env.test", ".env.test.local", ".env.production", ".env.production.local"]) walk(path7.resolve(root, file));
+  for (const dir of policy.workflow?.dependency_paths ?? ["node_modules", ".venv"]) walk(path8.resolve(root, dir));
+  for (const file of policy.workflow?.input_paths ?? [".env", ".env.local", ".env.test", ".env.test.local", ".env.production", ".env.production.local"]) walk(path8.resolve(root, file));
   return hash({ policy, deps, env: childEnv(env, policy.commands?.env_allow ?? []), runtime: process.versions, platform: process.platform, arch: process.arch });
 }
 function cachedRunner(root, policy, { fresh = false, execute = runCmd, announce = console.log } = {}) {
@@ -5669,15 +5924,15 @@ function cachedRunner(root, policy, { fresh = false, execute = runCmd, announce 
     if (indexDrift(root).length) return { code: 2, output: "Stage the intended candidate before checking: working tree differs from index." };
     const before = treeDigest(root), context = executionContext(root, policy);
     const argv = commandArgv(command, subst);
-    const executable = argv[0].includes("/") ? path7.resolve(root, argv[0]) : (process.env.PATH ?? "").split(path7.delimiter).map((p) => path7.join(p, argv[0])).find((p) => fs6.existsSync(p));
-    const stat = executable && fs6.existsSync(executable) ? fs6.statSync(executable) : null;
+    const executable = argv[0].includes("/") ? path8.resolve(root, argv[0]) : (process.env.PATH ?? "").split(path8.delimiter).map((p) => path8.join(p, argv[0])).find((p) => fs7.existsSync(p));
+    const stat = executable && fs7.existsSync(executable) ? fs7.statSync(executable) : null;
     const id = hash({ before, context, argv, executable, executableStat: stat && [stat.size, stat.mtimeMs, stat.ctimeMs] });
     const key = loadKey(root);
     if (!key.ok) throw new Error(key.detail);
-    const file = path7.join(stateDir(root), "checks", id + ".json");
-    if ((!fresh || executed.has(id)) && fs6.existsSync(file)) {
+    const file = path8.join(stateDir(root), "checks", id + ".json");
+    if ((!fresh || executed.has(id)) && fs7.existsSync(file)) {
       try {
-        const saved = JSON.parse(fs6.readFileSync(file, "utf8"));
+        const saved = JSON.parse(fs7.readFileSync(file, "utf8"));
         if (verifySignature(saved, key.key) && saved.id === id && saved.result.code === 0) {
           announce(`  reused check: ${argv.join(" ")}`);
           return saved.result;
@@ -5688,10 +5943,10 @@ function cachedRunner(root, policy, { fresh = false, execute = runCmd, announce 
     const result2 = execute(root, command, subst, { allow: policy.commands?.env_allow ?? [] });
     if (indexDrift(root).length || treeDigest(root) !== before || executionContext(root, policy) !== context)
       return { code: 1, output: "Candidate or execution environment changed during the check; rerun on stable inputs." };
-    fs6.mkdirSync(path7.dirname(file), { recursive: true });
+    fs7.mkdirSync(path8.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs6.writeFileSync(tmp, JSON.stringify(signAttestation({ id, result: result2, at: (/* @__PURE__ */ new Date()).toISOString() }, key.key)), { mode: 384 });
-    fs6.renameSync(tmp, file);
+    fs7.writeFileSync(tmp, JSON.stringify(signAttestation({ id, result: result2, at: (/* @__PURE__ */ new Date()).toISOString() }, key.key)), { mode: 384 });
+    fs7.renameSync(tmp, file);
     executed.add(id);
     return result2;
   };
@@ -5813,27 +6068,27 @@ function nextStep({ feature, spec, digest, tree, tests, results = [], requires =
 
 // src/cli/commands.mjs
 var PACKAGE_ROOT = fileURLToPath(new URL(true ? "../" : "../../", import.meta.url));
-var TEMPLATES = path11.join(PACKAGE_ROOT, "templates");
-var VERSION = JSON.parse(fs10.readFileSync(path11.join(PACKAGE_ROOT, "package.json"), "utf8")).version;
+var TEMPLATES = path12.join(PACKAGE_ROOT, "templates");
+var VERSION = JSON.parse(fs11.readFileSync(path12.join(PACKAGE_ROOT, "package.json"), "utf8")).version;
 var STATUS_CODE = { PASS: 0, FAIL: 1, NOT_EVALUATED: 2 };
 function targetRoot(args2) {
   const i = args2.indexOf("--target");
-  return path11.resolve(i === -1 ? process.cwd() : args2[i + 1]);
+  return path12.resolve(i === -1 ? process.cwd() : args2[i + 1]);
 }
 function copyIfAbsent(src, dest) {
-  if (fs10.existsSync(dest)) return false;
-  fs10.mkdirSync(path11.dirname(dest), { recursive: true });
-  fs10.copyFileSync(src, dest);
+  if (fs11.existsSync(dest)) return false;
+  fs11.mkdirSync(path12.dirname(dest), { recursive: true });
+  fs11.copyFileSync(src, dest);
   return true;
 }
 function activeFeature(root) {
-  const p = path11.join(root, "docs/specs/ACTIVE");
-  if (!fs10.existsSync(p)) return null;
-  const slug = fs10.readFileSync(p, "utf8").trim();
-  const dir = path11.join(root, "docs/specs", slug);
-  const yamlPath = path11.join(dir, "spec.yaml");
-  if (fs10.existsSync(yamlPath)) {
-    const specText2 = fs10.readFileSync(yamlPath, "utf8");
+  const p = path12.join(root, "docs/specs/ACTIVE");
+  if (!fs11.existsSync(p)) return null;
+  const slug = fs11.readFileSync(p, "utf8").trim();
+  const dir = path12.join(root, "docs/specs", slug);
+  const yamlPath = path12.join(dir, "spec.yaml");
+  if (fs11.existsSync(yamlPath)) {
+    const specText2 = fs11.readFileSync(yamlPath, "utf8");
     let parsed;
     try {
       parsed = yaml.load(specText2);
@@ -5852,9 +6107,9 @@ function activeFeature(root) {
       digest: result2.digest
     };
   }
-  const specPath = path11.join(dir, "spec.md");
-  if (!fs10.existsSync(specPath)) return { slug, dir, spec: null };
-  const specText = fs10.readFileSync(specPath, "utf8");
+  const specPath = path12.join(dir, "spec.md");
+  if (!fs11.existsSync(specPath)) return { slug, dir, spec: null };
+  const specText = fs11.readFileSync(specPath, "utf8");
   return { slug, dir, specText, spec: parseSpec(specText), digest: specDigest(specText) };
 }
 function refuseUncompiled(f) {
@@ -5873,7 +6128,7 @@ function report(gate, result2) {
 function featureTier(feature, root, policy, changed) {
   return effectiveTier(
     feature.spec.allowedPaths,
-    shippedPaths(changed, path11.relative(root, feature.dir), policy.meta_class ?? []),
+    shippedPaths(changed, path12.relative(root, feature.dir), policy.meta_class ?? []),
     policy
   );
 }
@@ -5893,59 +6148,59 @@ function record(root, slug, entry) {
 }
 var committedPolicyPaths = [".gatectl/policy.yaml", ".rda/policy.yaml"];
 var committedPubkeyPaths = [".gatectl/attest.pub", ".rda/attest.pub"];
-var policyDigest = (root) => specDigest(fs10.readFileSync(path11.join(resolveConfigDir(root).dir, "policy.yaml"), "utf8"));
+var policyDigest = (root) => specDigest(fs11.readFileSync(path12.join(resolveConfigDir(root).dir, "policy.yaml"), "utf8"));
 function engineDigest() {
   const base = PACKAGE_ROOT;
   const files = [];
   const walk = (dir) => {
-    for (const e of fs10.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const e of fs11.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       if (e.name === "node_modules" || e.name.startsWith(".")) continue;
-      const abs = path11.join(dir, e.name);
+      const abs = path12.join(dir, e.name);
       if (e.isDirectory()) walk(abs);
       else if (/\.mjs$/.test(e.name)) files.push(abs);
     }
   };
-  for (const dir of ["bin", "src"]) if (fs10.existsSync(path11.join(base, dir))) walk(path11.join(base, dir));
-  const h = crypto12.createHash("sha256");
+  for (const dir of ["bin", "src"]) if (fs11.existsSync(path12.join(base, dir))) walk(path12.join(base, dir));
+  const h = crypto13.createHash("sha256");
   for (const f of files) {
-    h.update(path11.relative(base, f));
+    h.update(path12.relative(base, f));
     h.update("\0");
-    h.update(fs10.readFileSync(f));
+    h.update(fs11.readFileSync(f));
   }
   return h.digest("hex");
 }
 var gitOut = (root, cmd2) => execSync3(`git ${cmd2}`, { cwd: root, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 var gitFile = (root, cmd2) => execSync3(`git ${cmd2}`, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
 function legacyLedgerNote(feature) {
-  const legacy = path11.join(feature.dir, "gates.json");
-  if (fs10.existsSync(legacy))
+  const legacy = path12.join(feature.dir, "gates.json");
+  if (fs11.existsSync(legacy))
     console.log(`note: ${legacy} is a pre-0.7 in-repo ledger and is no longer read \u2014 re-run the gates`);
 }
 function loadReview(root, slug) {
-  const p = path11.join(path11.dirname(reviewFile(root, slug)), "review.json");
-  if (!fs10.existsSync(p)) return null;
+  const p = path12.join(path12.dirname(reviewFile(root, slug)), "review.json");
+  if (!fs11.existsSync(p)) return null;
   try {
-    return JSON.parse(fs10.readFileSync(p, "utf8"));
+    return JSON.parse(fs11.readFileSync(p, "utf8"));
   } catch {
     return null;
   }
 }
 var lineReader = (root) => (rel) => {
-  const abs = path11.join(root, rel);
-  if (!abs.startsWith(root) || !fs10.existsSync(abs)) return null;
+  const abs = path12.join(root, rel);
+  if (!abs.startsWith(root) || !fs11.existsSync(abs)) return null;
   try {
-    return fs10.readFileSync(abs, "utf8").split("\n");
+    return fs11.readFileSync(abs, "utf8").split("\n");
   } catch {
     return null;
   }
 };
 function verifiedLockArtifacts(root, f) {
-  const lockPath = path11.join(f.dir, "spec.lock.json");
+  const lockPath = path12.join(f.dir, "spec.lock.json");
   const authority = openLedger(root, f.slug, { create: false });
-  if (!authority.ok || !fs10.existsSync(lockPath)) return [];
+  if (!authority.ok || !fs11.existsSync(lockPath)) return [];
   const ledger = readLedger(authority.path, authority.key);
   const lock = ledger.ok ? [...ledger.entries].reverse().find((e) => e.gate === "L") : null;
-  return lock?.status === "PASS" && lock.digest === f.digest && lock.lock_artifact === specDigest(fs10.readFileSync(lockPath, "utf8")) ? [path11.relative(root, lockPath)] : [];
+  return lock?.status === "PASS" && lock.digest === f.digest && lock.lock_artifact === specDigest(fs11.readFileSync(lockPath, "utf8")) ? [path12.relative(root, lockPath)] : [];
 }
 function currentResults(root, policy, entries) {
   if (!policy.workflow) return entries;
@@ -5958,12 +6213,12 @@ function recordedCompletion(root, target, f, authority, ledger) {
   if (last?.gate !== "Complete" || last.status !== "PASS") return null;
   try {
     const attPath = attestationFile(root, f.slug);
-    const completion = JSON.parse(fs10.readFileSync(path11.join(path11.dirname(attPath), "completion.json"), "utf8"));
-    const att = JSON.parse(fs10.readFileSync(attPath, "utf8"));
+    const completion = JSON.parse(fs11.readFileSync(path12.join(path12.dirname(attPath), "completion.json"), "utf8"));
+    const att = JSON.parse(fs11.readFileSync(attPath, "utf8"));
     if (!verifySignature(completion, authority.key) || !verifySignature(att, authority.key)) return null;
     const tree = treeDigest(root), policy = policyDigest(root);
     if (completion.decision !== "ACCEPT" || completion.feature !== f.slug || completion.tree !== tree || completion.spec_digest !== f.digest || completion.policy_digest !== policy || last.tree !== tree || last.digest !== f.digest || last.completion_mac !== completion.mac || att.tree !== tree || att.spec_digest !== f.digest || att.policy_digest !== policy || completion.attestation_mac !== att.mac || typeof completion.input_context !== "string") return null;
-    if (completion.input_context !== executionContext(fs10.realpathSync(root), target.policy, {})) return null;
+    if (completion.input_context !== executionContext(fs11.realpathSync(root), target.policy, {})) return null;
     if (indexDrift(root).length || treeDigest(root) !== tree) return null;
     return {
       state: "COMPLETED",
@@ -6002,14 +6257,14 @@ function gateCContext(root, target, f, label) {
     changed: changedPaths(root),
     diffText: currentDiffText(root),
     allowedPaths: f.spec.allowedPaths,
-    specDir: path11.relative(root, f.dir),
+    specDir: path12.relative(root, f.dir),
     metaClass: target.policy.meta_class ?? [],
     verifiedArtifacts: verifiedLockArtifacts(root, f)
   });
   if (requires.includes("R") && f.spec.acceptanceCriteriaWithoutTests.length)
     blockers.push("this tier requires per-criterion RED: policy-only criteria need tests after tier escalation");
-  const lockPath = path11.join(f.dir, "spec.lock.json");
-  const lock = fs10.existsSync(lockPath) ? latestLock(JSON.parse(fs10.readFileSync(lockPath, "utf8"))) : null;
+  const lockPath = path12.join(f.dir, "spec.lock.json");
+  const lock = fs11.existsSync(lockPath) ? latestLock(JSON.parse(fs11.readFileSync(lockPath, "utf8"))) : null;
   if (lock && lock.tier && lock.tier !== tier)
     blockers.push(`tier escalated ${lock.tier} \u2192 ${tier} by the actual diff \u2014 the lock was taken at ${lock.tier}; re-lock at ${tier}`);
   const tree = treeDigest(root);
@@ -6050,15 +6305,15 @@ function writeAttestation({ root, target, f, tier, requires, results, ledger, tr
     at: (/* @__PURE__ */ new Date()).toISOString()
   }, key);
   const attPath = attestationFile(root, f.slug);
-  fs10.mkdirSync(path11.dirname(attPath), { recursive: true });
-  fs10.writeFileSync(attPath, JSON.stringify(att, null, 2) + "\n");
+  fs11.mkdirSync(path12.dirname(attPath), { recursive: true });
+  fs11.writeFileSync(attPath, JSON.stringify(att, null, 2) + "\n");
   console.log(`  attested tree ${tree.slice(0, 12)}\u2026 \u2192 ${attPath}`);
   console.log(`  verify this commit afterwards with: gatectl verify --commit <sha>`);
   return 0;
 }
 function loadFeatureCritique(feature) {
-  const p = path11.join(feature.dir, "critique.md");
-  return fs10.existsSync(p) ? parseCritique(fs10.readFileSync(p, "utf8")) : null;
+  const p = path12.join(feature.dir, "critique.md");
+  return fs11.existsSync(p) ? parseCritique(fs11.readFileSync(p, "utf8")) : null;
 }
 function currentDiffText(root) {
   const staged = execSync3("git diff --cached --name-only", { cwd: root, encoding: "utf8" }).trim();
@@ -6071,11 +6326,11 @@ function listTargetFiles(root) {
     const out = [];
     const walk = (dir, depth) => {
       if (depth > 6) return;
-      for (const e of fs10.readdirSync(dir, { withFileTypes: true })) {
+      for (const e of fs11.readdirSync(dir, { withFileTypes: true })) {
         if (e.name === "node_modules" || e.name.startsWith(".")) continue;
-        const abs = path11.join(dir, e.name);
+        const abs = path12.join(dir, e.name);
         if (e.isDirectory()) walk(abs, depth + 1);
-        else out.push(path11.relative(root, abs));
+        else out.push(path12.relative(root, abs));
       }
     };
     try {
@@ -6089,9 +6344,9 @@ var MANIFESTS = ["package.json", "Cargo.toml", "go.mod", "pyproject.toml"];
 function readManifests(root) {
   const out = {};
   for (const name of MANIFESTS) {
-    const abs = path11.join(root, name);
-    if (!fs10.existsSync(abs)) continue;
-    const raw = fs10.readFileSync(abs, "utf8");
+    const abs = path12.join(root, name);
+    if (!fs11.existsSync(abs)) continue;
+    const raw = fs11.readFileSync(abs, "utf8");
     if (name !== "package.json") {
       out[name] = raw;
       continue;
@@ -6104,7 +6359,7 @@ function readManifests(root) {
   return out;
 }
 async function recallPriorRecords(root, policy, feature) {
-  const resolved = resolveMemoryConfig({ policy, env: process.env, repoName: path11.basename(root) });
+  const resolved = resolveMemoryConfig({ policy, env: process.env, repoName: path12.basename(root) });
   if (!resolved.ok) return [];
   const config = resolved.config;
   const [index] = await readPages({ config, fetchImpl: fetch, refs: [INDEX_REF] });
@@ -6129,20 +6384,20 @@ gatectl commit-check || {
 }
 `;
 function installHook(root, name, body2) {
-  const dir = path11.join(root, ".git/hooks");
-  if (!fs10.existsSync(dir)) return "no .git/hooks directory \u2014 not a git repository?";
-  const hook = path11.join(dir, name);
-  if (fs10.existsSync(hook)) return `${name} hook already exists \u2014 left untouched`;
-  fs10.writeFileSync(hook, body2, { mode: 493 });
-  return `installed ${path11.relative(root, hook)}`;
+  const dir = path12.join(root, ".git/hooks");
+  if (!fs11.existsSync(dir)) return "no .git/hooks directory \u2014 not a git repository?";
+  const hook = path12.join(dir, name);
+  if (fs11.existsSync(hook)) return `${name} hook already exists \u2014 left untouched`;
+  fs11.writeFileSync(hook, body2, { mode: 493 });
+  return `installed ${path12.relative(root, hook)}`;
 }
 function installPostCommitHook(root) {
-  const dir = path11.join(root, ".git/hooks");
-  if (!fs10.existsSync(dir)) return "no .git/hooks directory \u2014 not a git repository?";
-  const hook = path11.join(dir, "post-commit");
-  if (fs10.existsSync(hook)) return "post-commit hook already exists \u2014 left untouched";
-  fs10.writeFileSync(hook, POST_COMMIT_HOOK, { mode: 493 });
-  return `installed ${path11.relative(root, hook)}`;
+  const dir = path12.join(root, ".git/hooks");
+  if (!fs11.existsSync(dir)) return "no .git/hooks directory \u2014 not a git repository?";
+  const hook = path12.join(dir, "post-commit");
+  if (fs11.existsSync(hook)) return "post-commit hook already exists \u2014 left untouched";
+  fs11.writeFileSync(hook, POST_COMMIT_HOOK, { mode: 493 });
+  return `installed ${path12.relative(root, hook)}`;
 }
 var COMMANDS = {
   async workflow(args2) {
@@ -6156,7 +6411,7 @@ var COMMANDS = {
       return 0;
     }
     const configured = configureWorkflow(policy, mode);
-    fs10.writeFileSync(path11.join(resolveConfigDir(root).dir, "policy.yaml"), yaml.dump(configured, { lineWidth: 110 }));
+    fs11.writeFileSync(path12.join(resolveConfigDir(root).dir, "policy.yaml"), yaml.dump(configured, { lineWidth: 110 }));
     console.log(`Workflow changed to ${mode}. Review and commit this policy change separately before task work; earlier evidence is stale.`);
     return 0;
   },
@@ -6218,6 +6473,63 @@ var COMMANDS = {
     console.log(VERSION);
     return 0;
   },
+  // The owner's goal: drafted by an agent, confirmed only by a message the hook saw the owner send.
+  async goal(args2) {
+    const root = targetRoot(args2);
+    const many = (flag) => args2.flatMap((a, i) => a === flag && i + 1 < args2.length ? [args2[i + 1]] : []);
+    const one = (flag) => many(flag).at(-1) ?? null;
+    try {
+      switch (args2[0]) {
+        case "propose": {
+          const g = proposeGoal(root, {
+            goal: one("--goal"),
+            ownerWords: many("--owner-words"),
+            success: many("--success"),
+            outOfScope: many("--out-of-scope"),
+            by: one("--by") ?? "agent"
+          });
+          const s = goalStatus(root, g);
+          console.log(`goal ${s.id} drafted in docs/goal.yaml \u2014 not confirmed by the owner`);
+          for (const w of s.owner_words) console.log(`  owner words ${w.observed === "found" ? "found in" : w.observed === "not verifiable" ? "not verifiable against (truncated)" : "NOT found in"} observed prompts: "${w.text}"`);
+          console.log("Show the owner the goal, success criteria and out of scope. To confirm this exact draft they send:");
+          console.log(`  ${confirmMessage(s.id)}`);
+          console.log("then run `gatectl goal confirm`. Commit docs/goal.yaml separately from task changes.");
+          return 0;
+        }
+        case "confirm": {
+          const c = confirmGoal(root);
+          console.log(`goal ${c.id.slice(0, 14)}\u2026 confirmed by the owner's message at ${c.at}`);
+          console.log("  observed by the gatectl hook on this machine; this is not cryptographic proof");
+          return 0;
+        }
+        case "show": {
+          const g = readGoal(root);
+          if (!g) {
+            console.error("NO_GOAL: docs/goal.yaml does not exist; draft one with `gatectl goal propose`");
+            return 2;
+          }
+          const s = goalStatus(root, g);
+          if (args2.includes("--json")) {
+            console.log(JSON.stringify(s, null, 2));
+            return 0;
+          }
+          console.log(renderGoal(s));
+          for (const w of s.owner_words) console.log(`  owner said: "${w.text}" (${w.observed} in observed prompts)`);
+          console.log("  observation means the gatectl hook saw it; it is not cryptographic proof");
+          return 0;
+        }
+        default:
+          console.error("usage: gatectl goal propose --goal <g> --owner-words <quote>... [--success <c>]... [--out-of-scope <x>]... | confirm | show [--json]");
+          return 2;
+      }
+    } catch (e) {
+      if (e instanceof GoalError) {
+        console.error(e.message);
+        return e.exit;
+      }
+      throw e;
+    }
+  },
   // The work store is context for agents, never gate evidence. Imported lazily so that node:sqlite
   // is loaded only here, and no gate path can reach it.
   async work(args2) {
@@ -6225,12 +6537,12 @@ var COMMANDS = {
     return runWork2(args2, targetRoot(args2));
   },
   async hook() {
-    const raw = fs10.readFileSync(0, "utf8");
+    const raw = fs11.readFileSync(0, "utf8");
     if (raw.length > 1024 * 1024) {
       console.error("hook input is too large");
       return 2;
     }
-    console.log(JSON.stringify(runPluginHook(JSON.parse(raw), path11.join(PACKAGE_ROOT, "bin/gatectl.mjs"))));
+    console.log(JSON.stringify(runPluginHook(JSON.parse(raw), path12.join(PACKAGE_ROOT, "bin/gatectl.mjs"))));
     return 0;
   },
   async task(args2) {
@@ -6301,13 +6613,13 @@ var COMMANDS = {
       console.error("--mode must be fast or strict");
       return 2;
     }
-    const policyPath = path11.join(resolveConfigDir(root).dir, "policy.yaml");
-    if (!fs10.existsSync(policyPath)) {
-      const template = fs10.readFileSync(path11.join(TEMPLATES, "policy.yaml"), "utf8");
+    const policyPath = path12.join(resolveConfigDir(root).dir, "policy.yaml");
+    if (!fs11.existsSync(policyPath)) {
+      const template = fs11.readFileSync(path12.join(TEMPLATES, "policy.yaml"), "utf8");
       const files = listTargetFiles(root);
       const detection = detectCommands({ manifests: readManifests(root), files });
       const audit = auditTierPaths(yaml.load(template).tiers, files);
-      fs10.mkdirSync(path11.dirname(policyPath), { recursive: true });
+      fs11.mkdirSync(path12.dirname(policyPath), { recursive: true });
       let rendered = renderPolicy(template, detection);
       if (client) {
         const config = yaml.load(rendered);
@@ -6326,7 +6638,7 @@ var COMMANDS = {
         rendered = rendered.replace(/^(  required_for_tiers:) .+$/m, `$1 [${configured.critic.required_for_tiers.join(", ")}]`);
         rendered += "\n" + yaml.dump({ workflow: configured.workflow });
       }
-      fs10.writeFileSync(policyPath, rendered);
+      fs11.writeFileSync(policyPath, rendered);
       for (const e of detection.evidence) console.log(`detected: ${e}`);
       for (const [k2, v] of Object.entries(detection.commands)) console.log(`  ${k2.padEnd(13)} \u2192 ${v}`);
       if (audit.unmatched.length > 0)
@@ -6336,13 +6648,13 @@ var COMMANDS = {
       for (const p of audit.populated.filter((p2) => p2.tier === "A"))
         console.log(`tiers: ${p.glob} matches ${p.count} file(s) \u2192 tier A. Confirm that is right.`);
     }
-    copyIfAbsent(path11.join(TEMPLATES, "MVP.yaml"), path11.join(resolveConfigDir(root).dir, "MVP.yaml"));
-    fs10.mkdirSync(path11.join(root, "docs/specs"), { recursive: true });
+    copyIfAbsent(path12.join(TEMPLATES, "MVP.yaml"), path12.join(resolveConfigDir(root).dir, "MVP.yaml"));
+    fs11.mkdirSync(path12.join(root, "docs/specs"), { recursive: true });
     console.log("gatectl initialized (existing files left untouched)");
     if (args2.includes("--with-ci")) {
-      const dest = path11.join(root, ".github/workflows/gatectl-verify.yml");
-      const wrote = copyIfAbsent(path11.join(TEMPLATES, "ci/gatectl-verify.yml"), dest);
-      console.log(`ci: ${wrote ? `wrote ${path11.relative(root, dest)}` : "workflow already exists \u2014 left untouched"}`);
+      const dest = path12.join(root, ".github/workflows/gatectl-verify.yml");
+      const wrote = copyIfAbsent(path12.join(TEMPLATES, "ci/gatectl-verify.yml"), dest);
+      console.log(`ci: ${wrote ? `wrote ${path12.relative(root, dest)}` : "workflow already exists \u2014 left untouched"}`);
       if (wrote) console.log("ci: run `gatectl keygen`, put the private key in the GATECTL_SIGNING_KEY secret, and make the check required");
     }
     if (args2.includes("--with-hooks")) {
@@ -6367,17 +6679,17 @@ var COMMANDS = {
       console.error("usage: gatectl new <slug>");
       return 2;
     }
-    const dir = path11.join(root, "docs/specs", slug);
-    fs10.mkdirSync(dir, { recursive: true });
-    const yamlPath = path11.join(dir, "spec.yaml");
-    const mdPath = path11.join(dir, "spec.md");
+    const dir = path12.join(root, "docs/specs", slug);
+    fs11.mkdirSync(dir, { recursive: true });
+    const yamlPath = path12.join(dir, "spec.yaml");
+    const mdPath = path12.join(dir, "spec.md");
     const wrote = [];
     for (const [target, template] of [[yamlPath, "spec.yaml"], [mdPath, "spec.md"]]) {
-      if (fs10.existsSync(target)) continue;
-      fs10.writeFileSync(target, fs10.readFileSync(path11.join(TEMPLATES, template), "utf8").replaceAll("{slug}", slug));
-      wrote.push(path11.relative(root, target));
+      if (fs11.existsSync(target)) continue;
+      fs11.writeFileSync(target, fs11.readFileSync(path12.join(TEMPLATES, template), "utf8").replaceAll("{slug}", slug));
+      wrote.push(path12.relative(root, target));
     }
-    fs10.writeFileSync(path11.join(root, "docs/specs/ACTIVE"), slug + "\n");
+    fs11.writeFileSync(path12.join(root, "docs/specs/ACTIVE"), slug + "\n");
     console.log(`scaffolded ${wrote.join(", ") || "(nothing new)"} and set ACTIVE`);
     return 0;
   },
@@ -6431,7 +6743,7 @@ var COMMANDS = {
       obligationFiles: f.spec?.testObligations?.map((o) => o.file) ?? [],
       testGlobs,
       matches: matchesAny
-    }).filter((p0) => !p0.startsWith(path11.relative(root, f.dir)));
+    }).filter((p0) => !p0.startsWith(path12.relative(root, f.dir)));
     let baseHint = null;
     for (const ref2 of ["origin/main", "main", "HEAD"]) {
       try {
@@ -6442,9 +6754,9 @@ var COMMANDS = {
     }
     const attested = (() => {
       const attPath = attestationFile(root, f.slug);
-      if (!fs10.existsSync(attPath) || !l.ok) return false;
+      if (!fs11.existsSync(attPath) || !l.ok) return false;
       try {
-        const att = JSON.parse(fs10.readFileSync(attPath, "utf8"));
+        const att = JSON.parse(fs11.readFileSync(attPath, "utf8"));
         return verifySignature(att, l.key) && att.tree === treeDigest(root) && att.spec_digest === f.digest && att.policy_digest === policyDigest(root) && gateCContext(root, target, f, "next").result?.status === "PASS";
       } catch {
         return false;
@@ -6507,7 +6819,7 @@ var COMMANDS = {
       tier = "?";
       declared = "?";
     }
-    const locks = fs10.existsSync(path11.join(f.dir, "spec.lock.json")) ? JSON.parse(fs10.readFileSync(path11.join(f.dir, "spec.lock.json"), "utf8")) : [];
+    const locks = fs11.existsSync(path12.join(f.dir, "spec.lock.json")) ? JSON.parse(fs11.readFileSync(path12.join(f.dir, "spec.lock.json"), "utf8")) : [];
     const lock = latestLock(locks);
     console.log(`feature: ${f.slug}
 state: ${f.spec.state}
@@ -6535,8 +6847,8 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     const result2 = gateL({ spec: f.spec, critique: loadFeatureCritique(f), tier, policy: target.policy, mvp: target.mvp });
     const code2 = report("L", result2);
     if (code2 !== 0) return code2;
-    const lockPath = path11.join(f.dir, "spec.lock.json");
-    const locks = fs10.existsSync(lockPath) ? JSON.parse(fs10.readFileSync(lockPath, "utf8")) : [];
+    const lockPath = path12.join(f.dir, "spec.lock.json");
+    const locks = fs11.existsSync(lockPath) ? JSON.parse(fs11.readFileSync(lockPath, "utf8")) : [];
     const next = appendLock(locks, {
       digest: f.digest,
       at: (/* @__PURE__ */ new Date()).toISOString(),
@@ -6544,8 +6856,8 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       requiredTests: f.spec.requiredTests,
       allowedPaths: f.spec.allowedPaths
     });
-    fs10.writeFileSync(lockPath, JSON.stringify(next, null, 2));
-    record(root, f.slug, { gate: "L", status: "PASS", digest: f.digest, lock_artifact: specDigest(fs10.readFileSync(lockPath, "utf8")), tree: treeDigest(root), at: (/* @__PURE__ */ new Date()).toISOString() });
+    fs11.writeFileSync(lockPath, JSON.stringify(next, null, 2));
+    record(root, f.slug, { gate: "L", status: "PASS", digest: f.digest, lock_artifact: specDigest(fs11.readFileSync(lockPath, "utf8")), tree: treeDigest(root), at: (/* @__PURE__ */ new Date()).toISOString() });
     console.log(next === locks ? "already locked at this digest" : `locked v${latestLock(next).version}`);
     return 0;
   },
@@ -6558,24 +6870,24 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     const testGlobs = target.policy.test_paths ?? ["test/**", "e2e/**", "**/*.test.*", "**/*.spec.*"];
     const tp = testPatch({ changed, obligationFiles, testGlobs, matches: matchesAny });
     const ip = implementationPatch({ changed, obligationFiles, testGlobs, matches: matchesAny });
-    const work = fs10.mkdtempSync(path11.join(os5.tmpdir(), "rda-red-"));
-    const dir = path11.join(work, "tree");
+    const work = fs11.mkdtempSync(path12.join(os5.tmpdir(), "rda-red-"));
+    const dir = path12.join(work, "tree");
     try {
       execSync3(`git worktree add -q --detach ${dir} ${baseSha}`, { cwd: root, stdio: "pipe" });
       for (const rel of tp) {
-        const from = path11.join(root, rel);
-        if (!fs10.existsSync(from)) continue;
-        fs10.mkdirSync(path11.dirname(path11.join(dir, rel)), { recursive: true });
-        fs10.copyFileSync(from, path11.join(dir, rel));
+        const from = path12.join(root, rel);
+        if (!fs11.existsSync(from)) continue;
+        fs11.mkdirSync(path12.dirname(path12.join(dir, rel)), { recursive: true });
+        fs11.copyFileSync(from, path12.join(dir, rel));
       }
-      const modules = path11.join(root, "node_modules");
-      if (fs10.existsSync(modules) && !fs10.existsSync(path11.join(dir, "node_modules")))
-        fs10.symlinkSync(modules, path11.join(dir, "node_modules"), "dir");
+      const modules = path12.join(root, "node_modules");
+      if (fs11.existsSync(modules) && !fs11.existsSync(path12.join(dir, "node_modules")))
+        fs11.symlinkSync(modules, path12.join(dir, "node_modules"), "dir");
       else if (target.policy.commands?.install && target.policy.commands.install !== "none")
         runCmd(dir, target.policy.commands.install);
       let replayTree = null;
       try {
-        const idx = path11.join(work, "index");
+        const idx = path12.join(work, "index");
         const env = { ...process.env, GIT_INDEX_FILE: idx };
         execSync3("git add -A", { cwd: dir, env, stdio: "pipe" });
         replayTree = execSync3("git write-tree", { cwd: dir, env, encoding: "utf8" }).trim();
@@ -6583,7 +6895,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       }
       const verdicts = f.spec.testObligations.map((o) => {
         const obligation = { criterion: o.ac ?? "AC-?", file: o.file, selector: o.selector, expected_red: o.expectedRed ?? "assertion" };
-        if (!fs10.existsSync(path11.join(dir, o.file)))
+        if (!fs11.existsSync(path12.join(dir, o.file)))
           return {
             ok: false,
             status: "NOT_EVALUATED",
@@ -6603,7 +6915,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
         execSync3(`git worktree remove --force ${dir}`, { cwd: root, stdio: "pipe" });
       } catch {
       }
-      fs10.rmSync(work, { recursive: true, force: true });
+      fs11.rmSync(work, { recursive: true, force: true });
     }
   },
   async red(args2) {
@@ -6778,7 +7090,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       changed,
       diffText,
       spec: f.spec,
-      specDir: path11.relative(root, f.dir),
+      specDir: path12.relative(root, f.dir),
       verifiedArtifacts
     });
     if (treeDigest(root) !== before) {
@@ -6803,9 +7115,9 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       console.error("no active feature");
       return 2;
     }
-    const critiquePath = path11.join(f.dir, "critique.md");
-    if (fs10.existsSync(critiquePath) && !args2.includes("--force")) {
-      const raw = fs10.readFileSync(critiquePath, "utf8");
+    const critiquePath = path12.join(f.dir, "critique.md");
+    if (fs11.existsSync(critiquePath) && !args2.includes("--force")) {
+      const raw = fs11.readFileSync(critiquePath, "utf8");
       const resolved = [...raw.matchAll(/^\s*>?\s*(?:\*\*)?RESOLVED(?:\*\*)?:/gm)].length;
       if (resolved > 0) {
         console.error(`${critiquePath} already carries ${resolved} resolved finding(s)`);
@@ -6813,7 +7125,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
         return 2;
       }
     }
-    const priorText = fs10.existsSync(critiquePath) ? fs10.readFileSync(critiquePath, "utf8") : null;
+    const priorText = fs11.existsSync(critiquePath) ? fs11.readFileSync(critiquePath, "utf8") : null;
     const priorRound = priorText ? splitRounds(priorText) : null;
     const { last: priorRounds, counts: priorCounts } = roundHistory(priorText);
     if (priorRound) console.log(`round ${priorRounds + 1}: ${priorRound.length} finding(s) carried from the last one`);
@@ -6840,8 +7152,8 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       history: priorRound ? [...priorCounts, priorRound.length] : priorCounts,
       archive: priorArchive(priorText)
     });
-    fs10.writeFileSync(path11.join(f.dir, "critique.md"), file);
-    console.log(`wrote ${path11.join(f.dir, "critique.md")}`);
+    fs11.writeFileSync(path12.join(f.dir, "critique.md"), file);
+    console.log(`wrote ${path12.join(f.dir, "critique.md")}`);
     return 0;
   },
   // Gate X's model call, kept apart from the gate exactly as `critique` is from `lock`: one
@@ -6921,9 +7233,9 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     const ledger = authority.ok ? readLedger(authority.path, authority.key) : { ok: false, entries: [] };
     const prior = ledger.ok ? [...ledger.entries].reverse().find((e) => e.gate === "Review" && e.digest === f.digest && e.config_digest === configDigest) : null;
     if (!args2.includes("--fresh") && !args2.includes("--full") && prior?.tree === candidate) {
-      const out2 = path11.join(path11.dirname(reviewFile(root, f.slug)), "review.json");
-      fs10.mkdirSync(path11.dirname(out2), { recursive: true });
-      fs10.writeFileSync(out2, JSON.stringify(prior.review, null, 2) + "\n");
+      const out2 = path12.join(path12.dirname(reviewFile(root, f.slug)), "review.json");
+      fs11.mkdirSync(path12.dirname(out2), { recursive: true });
+      fs11.writeFileSync(out2, JSON.stringify(prior.review, null, 2) + "\n");
       console.log("Reused review for this exact candidate; next: gatectl review-check");
       return 0;
     }
@@ -6979,9 +7291,9 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       model: parsed.model ?? target.policy.reviewer.model ?? null,
       at: (/* @__PURE__ */ new Date()).toISOString()
     };
-    const out = path11.join(path11.dirname(reviewFile(root, f.slug)), "review.json");
-    fs10.mkdirSync(path11.dirname(out), { recursive: true });
-    fs10.writeFileSync(out, JSON.stringify(review, null, 2) + "\n");
+    const out = path12.join(path12.dirname(reviewFile(root, f.slug)), "review.json");
+    fs11.mkdirSync(path12.dirname(out), { recursive: true });
+    fs11.writeFileSync(out, JSON.stringify(review, null, 2) + "\n");
     if (validateReview(review).ok) record(root, f.slug, { gate: "Review", status: "PASS", digest: f.digest, tree, config_digest: configDigest, review, incremental, at: (/* @__PURE__ */ new Date()).toISOString() });
     console.log(incremental ? "Reviewed changes since previous review" : "Reviewed complete task diff");
     const severe = (review.findings ?? []).filter((x) => ["critical", "high"].includes(x.severity));
@@ -7103,7 +7415,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       console.error("no active feature");
       return 2;
     }
-    const inputContext = executionContext(fs10.realpathSync(root), target.policy, {});
+    const inputContext = executionContext(fs11.realpathSync(root), target.policy, {});
     const ctx = gateCContext(root, target, f, "complete");
     if (ctx.code !== void 0) return ctx.code;
     const tree = ctx.tree;
@@ -7114,8 +7426,8 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     const obligations2 = f.spec.testObligations.map((o) => ({ criterion: o.ac ?? "AC-?", file: o.file, selector: o.selector }));
     const attPath = attestationFile(root, f.slug);
     let attestation = { ok: false, detail: "no attestation \u2014 run commit-check first" };
-    if (fs10.existsSync(attPath)) {
-      const att = JSON.parse(fs10.readFileSync(attPath, "utf8"));
+    if (fs11.existsSync(attPath)) {
+      const att = JSON.parse(fs11.readFileSync(attPath, "utf8"));
       if (!verifySignature(att, ctx.key)) attestation = { ok: false, detail: "the attestation does not verify" };
       else if (att.tree !== tree) attestation = { ok: false, detail: "the attestation is for a different tree" };
       else if (att.spec_digest !== f.digest || att.policy_digest !== policyDigest(root)) attestation = { ok: false, detail: "the attestation is for a different specification or policy" };
@@ -7130,7 +7442,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       attestation,
       requires: ctx.requires
     });
-    if (inputContext !== executionContext(fs10.realpathSync(root), target.policy, {}) || ctx.tree !== treeDigest(root) || indexDrift(root).length) {
+    if (inputContext !== executionContext(fs11.realpathSync(root), target.policy, {}) || ctx.tree !== treeDigest(root) || indexDrift(root).length) {
       console.error("completion: NOT_EVALUATED \u2014 candidate or file inputs changed during validation");
       return 2;
     }
@@ -7160,9 +7472,9 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
       evidence: { red: red?.replay ? { base: red.replay.base, tree: red.replay.tree } : null, green: green ? { tree: green.tree } : null },
       at: (/* @__PURE__ */ new Date()).toISOString()
     }, ctx.key);
-    const out = path11.join(path11.dirname(attPath), "completion.json");
-    fs10.mkdirSync(path11.dirname(out), { recursive: true });
-    fs10.writeFileSync(out, JSON.stringify(record0, null, 2) + "\n");
+    const out = path12.join(path12.dirname(attPath), "completion.json");
+    fs11.mkdirSync(path12.dirname(out), { recursive: true });
+    fs11.writeFileSync(out, JSON.stringify(record0, null, 2) + "\n");
     record(root, f.slug, {
       gate: "Complete",
       status: decision.decision === "ACCEPT" ? "PASS" : "FAIL",
@@ -7226,14 +7538,14 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     if (attPathArg || !wantRerun) {
       try {
         const p0 = attPathArg ?? attestationFile(root, activeFeature(root)?.slug ?? "");
-        att = JSON.parse(fs10.readFileSync(p0, "utf8"));
+        att = JSON.parse(fs11.readFileSync(p0, "utf8"));
       } catch {
         console.error("verify: NOT_EVALUATED\n  - no readable attestation (pass --attestation <file>, or --rerun to check the commit itself)");
         return 2;
       }
     } else {
       try {
-        att = JSON.parse(fs10.readFileSync(attestationFile(root, activeFeature(root)?.slug ?? ""), "utf8"));
+        att = JSON.parse(fs11.readFileSync(attestationFile(root, activeFeature(root)?.slug ?? ""), "utf8"));
       } catch {
       }
     }
@@ -7394,8 +7706,8 @@ ${result2.errors.map((x) => `    ${x}`).join("\n")}`);
       console.log(`verify ${sha.slice(0, 12)}: no claim to check \u2014 re-running this commit's gates directly`);
     }
     if (!wantRerun) return 0;
-    const work = fs10.mkdtempSync(path11.join(os5.tmpdir(), "rda-verify-"));
-    const dir = path11.join(work, "tree");
+    const work = fs11.mkdtempSync(path12.join(os5.tmpdir(), "rda-verify-"));
+    const dir = path12.join(work, "tree");
     try {
       execSync3(`git worktree add -q --detach ${dir} ${sha}`, { cwd: root, stdio: "pipe" });
       const policy = yaml.load(policyText);
@@ -7478,8 +7790,8 @@ ${diagnostics(r2)}`);
   - ${check.reasons.join("\n  - ")}`);
           return 2;
         }
-        const out2 = path11.resolve(evidencePath);
-        fs10.writeFileSync(out2, JSON.stringify(envelope, null, 2) + "\n");
+        const out2 = path12.resolve(evidencePath);
+        fs11.writeFileSync(out2, JSON.stringify(envelope, null, 2) + "\n");
         console.log(`evidence (unsigned) for ${sha.slice(0, 12)} \u2192 ${out2}`);
         console.log(`  envelope digest ${envelopeDigest(envelope).slice(0, 16)}\u2026`);
         console.log("  sign it from a job that runs none of this repository's code: gatectl attest --evidence <file>");
@@ -7493,8 +7805,8 @@ ${diagnostics(r2)}`);
         return 2;
       }
       const issued = signIssued(body2, ik.key);
-      const out = path11.resolve(at("--out") ?? "rda-issued.json");
-      fs10.writeFileSync(out, JSON.stringify(issued, null, 2) + "\n");
+      const out = path12.resolve(at("--out") ?? "rda-issued.json");
+      fs11.writeFileSync(out, JSON.stringify(issued, null, 2) + "\n");
       console.log(`issued verdict for ${sha.slice(0, 12)} \u2192 ${out}`);
       console.log(`  signed with ${ik.source}`);
       if (process.env.GITHUB_ACTIONS)
@@ -7510,7 +7822,7 @@ ${diagnostics(r2)}`);
         execSync3(`git worktree remove --force ${dir}`, { cwd: root, stdio: "pipe" });
       } catch {
       }
-      fs10.rmSync(work, { recursive: true, force: true });
+      fs11.rmSync(work, { recursive: true, force: true });
     }
   },
   // The signer. It is the only process that holds the key, and it runs NOTHING from the
@@ -7530,7 +7842,7 @@ ${diagnostics(r2)}`);
     };
     let envelope;
     try {
-      envelope = JSON.parse(fs10.readFileSync(path11.resolve(at("--evidence") ?? "rda-evidence.json"), "utf8"));
+      envelope = JSON.parse(fs11.readFileSync(path12.resolve(at("--evidence") ?? "rda-evidence.json"), "utf8"));
     } catch (e) {
       console.error(`attest: NOT_EVALUATED
   - no readable evidence (--evidence <file>): ${e.message}`);
@@ -7591,8 +7903,8 @@ ${diagnostics(r2)}`);
         at: (/* @__PURE__ */ new Date()).toISOString()
       }
     }, ik.key);
-    const out = path11.resolve(at("--out") ?? "rda-issued.json");
-    fs10.writeFileSync(out, JSON.stringify(verdict, null, 2) + "\n");
+    const out = path12.resolve(at("--out") ?? "rda-issued.json");
+    fs11.writeFileSync(out, JSON.stringify(verdict, null, 2) + "\n");
     console.log(`attest ${String(envelope.head_sha).slice(0, 12)}: SIGNED \u2192 ${out}`);
     console.log(`  cross-checked: ${checked.length ? checked.join(", ") : "nothing \u2014 no CI context was available to this signer"}`);
     console.log(`  gates in evidence: ${Object.entries(envelope.gates).map(([g, v]) => `${g}=${v}`).join(", ")}`);
@@ -7632,8 +7944,8 @@ ${diagnostics(r2)}`);
       console.log(`  ${result2.compiled.blocking_questions.length} BLOCKING question(s) still open`);
     const out = args2.indexOf("--out");
     if (out !== -1 && args2[out + 1]) {
-      fs10.writeFileSync(
-        path11.resolve(args2[out + 1]),
+      fs11.writeFileSync(
+        path12.resolve(args2[out + 1]),
         JSON.stringify({ digest: result2.digest, compiled: result2.compiled, obligations: result2.obligations }, null, 2) + "\n"
       );
       console.log(`  wrote ${args2[out + 1]}`);
@@ -7645,17 +7957,17 @@ ${diagnostics(r2)}`);
   async keygen(args2) {
     const root = targetRoot(args2);
     const file = issuerKeyFile(root);
-    if (fs10.existsSync(file) && !args2.includes("--force")) {
+    if (fs11.existsSync(file) && !args2.includes("--force")) {
       console.error(`issuer key already exists: ${file}
   --force replaces it \u2014 every verdict signed by the old key stops verifying`);
       return 2;
     }
     const { privatePem, publicPem } = generateIssuerKeypair();
-    fs10.mkdirSync(path11.dirname(file), { recursive: true, mode: 448 });
-    fs10.writeFileSync(file, privatePem, { mode: 384 });
-    const pub = path11.join(resolveConfigDir(root).dir, "attest.pub");
-    fs10.mkdirSync(path11.dirname(pub), { recursive: true });
-    fs10.writeFileSync(pub, publicPem);
+    fs11.mkdirSync(path12.dirname(file), { recursive: true, mode: 448 });
+    fs11.writeFileSync(file, privatePem, { mode: 384 });
+    const pub = path12.join(resolveConfigDir(root).dir, "attest.pub");
+    fs11.mkdirSync(path12.dirname(pub), { recursive: true });
+    fs11.writeFileSync(pub, publicPem);
     console.log(`private key: ${file} (0600 \u2014 never commit it, never print it into a log)`);
     console.log(`public key:  ${pub} (commit this)`);
     console.log("");
@@ -7715,7 +8027,7 @@ ${diagnostics(r2)}`);
 ${content}`);
       return 0;
     }
-    const resolved = resolveMemoryConfig({ policy: target.policy, env: process.env, repoName: path11.basename(root) });
+    const resolved = resolveMemoryConfig({ policy: target.policy, env: process.env, repoName: path12.basename(root) });
     if (!resolved.ok) {
       console.error(`NOT_EVALUATED: ${resolved.detail}`);
       return 2;

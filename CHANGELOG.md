@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `gatectl goal propose|confirm|show`: the owner's goal in `docs/goal.yaml`, drafted from verbatim owner words. Confirmation counts only when the UserPromptSubmit hook observed the owner send the exact line naming the draft's full sha256 id after the draft; edits make it "changed since the owner confirmed it". SessionStart and `work brief` show the goal first.
+- The UserPromptSubmit hook keeps a bounded, 0600 log of owner prompts and a never-rotated log of confirmation messages under the state directory. Gates read neither.
+
 ## 0.17.0 — 2026-09-26
 
 - `gatectl work`: per-worktree work store (questions, attempts, conclusions, checkpoints) and `work brief`, so a new session recovers the goal, findings, interrupted work, decisions needed and the next action. SessionStart injects a bounded brief.

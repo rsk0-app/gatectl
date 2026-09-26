@@ -1,0 +1,99 @@
+id: owner-goal
+state: DRAFT
+mvp_ref: owner-visibility
+intent: |
+  Stage 2 of the context-layer plan (ADR 0001): hold the owner's main idea as an explicit project
+  goal that every session starts from, and make "the owner approved it" something gatectl observed
+  rather than something an agent wrote (the old MVP.yaml carried an agent-written "approved by the
+  owner" line). The owner explains in their own words; the agent drafts goal, success criteria and
+  out of scope; the owner confirms that exact draft with a dedicated message.
+
+  - `docs/goal.yaml` (committed): verbatim owner words, goal, success criteria, out of scope,
+    drafted_by/drafted_at, and an optional confirmation {id, at}. The draft id is
+    `G-` + the full 64-hex sha256 over the canonical agreed content (owner words, goal, success,
+    out of scope); a short prefix may be displayed but every check compares the full id. Any
+    change to that content is a different id.
+  - Observation: in repositories with .gatectl/policy.yaml the UserPromptSubmit hook appends each
+    owner prompt to `<state>/owner-prompts.jsonl` (text capped at 4000 characters with a
+    `truncated` flag; mode 0600). Rotation renames the live file to `.1` when it reaches 100
+    entries; only the last 200 entries across both generations are ever read as observed. A prompt whose whole text,
+    trimmed and case-folded with trailing punctuation removed, is exactly `подтверждаю цель G-<64 hex>`
+    or `confirm goal G-<64 hex>` is also appended to `<state>/owner-confirmations.jsonl`, which is
+    never rotated. "Observed" means seen by the gatectl hook; it is not cryptographic proof and the
+    output says so. Appends use O_APPEND; rotation happens under a lock with a bounded wait and is
+    skipped when the lock is busy.
+  - `gatectl goal propose --goal <g> --owner-words <verbatim>... [--success <c>]... [--out-of-scope <x>]...`
+    writes a draft (clearing any confirmation), prints its id, which owner quotes the prompt log
+    contains (whitespace-insensitive, case-sensitive; a quote may lie beyond a truncated prompt and
+    is then reported as not verifiable), and the exact confirmation message the owner must send.
+  - `gatectl goal confirm` records the confirmation only when an observed confirmation for the
+    current id arrived after drafted_at; otherwise exit 1 OWNER_CONFIRMATION_NOT_OBSERVED.
+  - Status: `confirmed` when the recorded confirmation id equals the current id and this machine
+    observed it; `confirmed elsewhere (not verified here)` when ids match but there is no local
+    observation; `changed since confirmation` when ids differ; otherwise `draft`.
+  - `gatectl goal show [--json]`; SessionStart and `work brief` present goal and status first.
+  Not in this stage: capability map, next-step proposals. Gates never read the goal or the logs.
+
+invariants:
+  - id: INV-01
+    statement: A goal is reported confirmed only when the recorded confirmation id equals the id of the current agreed content and a hook-observed dedicated confirmation message for that id arrived after the draft; a refusal, a partial quote or a confirmation of other content never confirms.
+  - id: INV-02
+    statement: No module reachable from gate, next, completion, commit-check or attestation code interprets docs/goal.yaml or reads the prompt or confirmation logs; the goal's meaning and confirmation status are never gate evidence. docs/goal.yaml is ordinary repository content for tree binding, changed paths and checks; the logs, which live outside the repository, never change those commands' answers.
+  - id: INV-03
+    statement: Recording never fails or blocks a hook beyond a bounded lock wait; logs are mode 0600 under the gatectl state directory and written only for repositories with .gatectl/policy.yaml; the confirmation log is never rotated.
+  - id: INV-04
+    statement: Showing the goal needs no node:sqlite; existing hook context, reminders and work brief behaviour are otherwise unchanged.
+
+acceptance_criteria:
+  - id: AC-01
+    statement: After the hook observes an owner prompt, `goal propose` writes docs/goal.yaml as a draft with an id over all agreed content, reports each owner quote as found or not in observed prompts, and prints the exact confirmation message with the full 64-hex id; `goal show` says the goal is not confirmed by the owner.
+    test:
+      file: test/owner-goal.test.mjs
+      selector: drafts the goal with an id and checks the owner's words
+      expected_red: assertion
+  - id: AC-02
+    statement: The `goal confirm` command exits 1 with OWNER_CONFIRMATION_NOT_OBSERVED when no dedicated message for the current id arrived after the draft (including a refusal containing the phrase and a confirmation of an earlier id); a message naming only a prefix of the id does not count; it succeeds after the exact message; a later edit of any agreed field, including owner words, reports changed since confirmation; without the local confirmation log the status is confirmed elsewhere (not verified here).
+    test:
+      file: test/owner-goal.test.mjs
+      selector: confirmation needs the owner's dedicated message for this exact draft
+      expected_red: assertion
+  - id: AC-03
+    statement: SessionStart context and `work brief --json` present the owner goal with its status, even without a work store and with GATECTL_WORK_SQLITE=off for the hook; without docs/goal.yaml nothing about a goal is added.
+    test:
+      file: test/owner-goal.test.mjs
+      selector: every session starts from the owner goal
+      expected_red: assertion
+  - id: AC-04
+    statement: The prompt log rotates by rename, so an append in progress survives a rotation (it can be lost only if two rotations, 100 further prompts, complete between its open and its write), at most the last 200 entries are read as observed, texts of at most 4000 characters marked truncated when cut, mode 0600; concurrent hooks keep every confirmation message; nothing is recorded for a repository without a policy; an unwritable state directory leaves the hook exit 0 with its usual context.
+    test:
+      file: test/owner-goal.test.mjs
+      selector: observation is bounded, concurrent-safe and never breaks the hook
+      expected_red: assertion
+  - id: AC-05
+    statement: Nothing reachable from gate, next, completion or attestation modules imports the goal module or the context layer, and `next --json` and `status` answer identically with the prompt and confirmation logs absent, populated or corrupted.
+    test:
+      file: test/owner-goal.test.mjs
+      selector: gates never read the owner goal
+      expected_red: assertion
+
+allowed_paths:
+  - src/core/goal.mjs
+  - src/cli/commands.mjs
+  - src/cli/plugin-hook.mjs
+  - src/context/**
+  - test/owner-goal.test.mjs
+  - test/release-version.test.mjs
+  - test/e2e-cli.test.mjs
+  - plugins/gatectl/bin/gatectl.mjs
+  - plugins/gatectl/skills/**
+  - README.md
+  - CHANGELOG.md
+  - docs/architecture/**
+  - docs/specs/owner-goal/**
+  - docs/specs/ACTIVE
+
+rollback:
+  strategy: Revert the commit. docs/goal.yaml and the logs are ignored by earlier versions; delete the logs under the state directory if unwanted.
+  notes: null
+
+blocking_questions: []
