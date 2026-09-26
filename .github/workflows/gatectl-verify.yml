@@ -1,4 +1,4 @@
-# Installed by `rda init --with-ci`. Two jobs, and the split is the point.
+# Installed by `gatectl init --with-ci`. Two jobs, and the split is the point.
 #
 #   run     — executes this pull request's code: install, build, tests. It is handed NO secrets,
 #             because `pnpm install` alone runs arbitrary lifecycle scripts from the branch under
@@ -16,12 +16,12 @@
 # did. Bounding that is the sandbox's job — see `sandbox:` in the policy — not cryptography's.
 #
 # Setup, once:
-#   gatectl keygen                              # writes .rda/attest.pub (commit it) + a private key
-#   gh secret set GATECTL_SIGNING_KEY < ~/.rda/state/keys/<repo>.issuer.pem
-#   rm ~/.rda/state/keys/<repo>.issuer.pem  # a developer machine has no reason to hold it
+#   gatectl keygen                              # writes .gatectl/attest.pub (commit it) + a private key
+#   gh secret set GATECTL_SIGNING_KEY < ~/.gatectl/state/keys/<repo>.issuer.pem
+#   rm ~/.gatectl/state/keys/<repo>.issuer.pem  # a developer machine has no reason to hold it
 #
 # And on the GitHub side, without which this is decoration: make `attest` a REQUIRED check, and
-# keep `.github/workflows/**`, `.rda/**` and the public key under CODEOWNERS.
+# keep `.github/workflows/**`, `.gatectl/**` and the public key under CODEOWNERS.
 name: gatectl verify
 
 on:
@@ -45,7 +45,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: rsk0-app/gatectl
-          ref: v0.12.0
+          ref: v0.17.0
           path: .gatectl-engine
 
       - uses: actions/setup-node@v4
@@ -84,7 +84,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: rsk0-app/gatectl
-          ref: v0.12.0
+          ref: v0.17.0
           path: .gatectl-engine
 
       - uses: actions/setup-node@v4
