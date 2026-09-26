@@ -69,6 +69,26 @@ export function verifyIssued(att, publicKey) {
   } catch { return false }
 }
 
+// An issued record — from `verify --rerun --issue` (commit, tree, policy_digest) or from `attest`
+// over an evidence envelope (head_sha, tree_oid, trusted_policy) — held against what the verified
+// commit carries. Every expected value is derived from that commit by the caller; the record never
+// supplies one, or it would be checking itself. A commit without a spec expects a record that
+// states none: null, or the envelope's all-zero digest.
+export function checkIssued({ att, tree, sha, specDigest, policyDigest }) {
+  const reasons = []
+  const commit = att.commit ?? att.head_sha
+  const issuedTree = att.tree ?? att.tree_oid
+  const policy = att.policy_digest ?? att.trusted_policy?.digest
+  if (commit !== sha) reasons.push(`issued for commit ${String(commit).slice(0, 12)}…, not ${sha.slice(0, 12)}…`)
+  if (issuedTree !== tree) reasons.push(`attested tree ${String(issuedTree).slice(0, 12)}… is not this commit's tree ${tree.slice(0, 12)}…`)
+  // A missing field states nothing; only an explicit null or the all-zero digest says "no spec".
+  const noSpec = att.spec_digest === null || /^0{64}$/.test(String(att.spec_digest))
+  if (specDigest === null ? !noSpec : att.spec_digest !== specDigest)
+    reasons.push("the spec at this commit is not the spec the issuer judged")
+  if (policy !== policyDigest) reasons.push("the policy at this commit is not the policy the issuer judged under")
+  return { ok: reasons.length === 0, reasons }
+}
+
 export function verifySignature(att, key) {
   if (!att || typeof att.mac !== "string") return false
   const expected = Buffer.from(sign(att, key), "hex")

@@ -4148,6 +4148,19 @@ function verifyIssued(att, publicKey) {
     return false;
   }
 }
+function checkIssued({ att, tree, sha, specDigest: specDigest2, policyDigest: policyDigest2 }) {
+  const reasons = [];
+  const commit = att.commit ?? att.head_sha;
+  const issuedTree = att.tree ?? att.tree_oid;
+  const policy = att.policy_digest ?? att.trusted_policy?.digest;
+  if (commit !== sha) reasons.push(`issued for commit ${String(commit).slice(0, 12)}\u2026, not ${sha.slice(0, 12)}\u2026`);
+  if (issuedTree !== tree) reasons.push(`attested tree ${String(issuedTree).slice(0, 12)}\u2026 is not this commit's tree ${tree.slice(0, 12)}\u2026`);
+  const noSpec = att.spec_digest === null || /^0{64}$/.test(String(att.spec_digest));
+  if (specDigest2 === null ? !noSpec : att.spec_digest !== specDigest2)
+    reasons.push("the spec at this commit is not the spec the issuer judged");
+  if (policy !== policyDigest2) reasons.push("the policy at this commit is not the policy the issuer judged under");
+  return { ok: reasons.length === 0, reasons };
+}
 function verifySignature(att, key) {
   if (!att || typeof att.mac !== "string") return false;
   const expected = Buffer.from(sign(att, key), "hex");
@@ -6874,7 +6887,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
         digest: f.digest,
         tree: treeDigest(root),
         review_digest: reviewDigest(review2),
-        ...finding ? { finding: id, severity: finding.severity, title: finding.title } : { criterion: id, verdict: claim.verdict, title: claim.rationale ?? "" },
+        ...finding ? { finding: id, severity: finding.severity, title: finding.title } : { criterion: id, verdict: claim.verdict, title: claim.reasoning?.trim() || "the reviewer gave no reasoning" },
         reason,
         at: (/* @__PURE__ */ new Date()).toISOString()
       });
@@ -6908,7 +6921,7 @@ tier: ${tier}${tier !== declared ? ` (declared ${declared}, escalated by the act
     const ledger = authority.ok ? readLedger(authority.path, authority.key) : { ok: false, entries: [] };
     const prior = ledger.ok ? [...ledger.entries].reverse().find((e) => e.gate === "Review" && e.digest === f.digest && e.config_digest === configDigest) : null;
     if (!args2.includes("--fresh") && !args2.includes("--full") && prior?.tree === candidate) {
-      const out2 = reviewFile(root, f.slug);
+      const out2 = path11.join(path11.dirname(reviewFile(root, f.slug)), "review.json");
       fs10.mkdirSync(path11.dirname(out2), { recursive: true });
       fs10.writeFileSync(out2, JSON.stringify(prior.review, null, 2) + "\n");
       console.log("Reused review for this exact candidate; next: gatectl review-check");
@@ -7353,13 +7366,7 @@ ${result2.errors.map((x) => `    ${x}`).join("\n")}`);
   - signature does not verify \u2014 wrong key, or the attestation was edited`);
         return 1;
       }
-      const r = att.alg === "ed25519" ? checkIssued({
-        att,
-        tree,
-        sha,
-        specDigest: digestOfSpec ?? att.spec_digest,
-        policyDigest: specDigest(policyText)
-      }) : checkAttestation({
+      const r = att.alg === "ed25519" ? checkIssued({ att, tree, sha, specDigest: digestOfSpec, policyDigest: specDigest(policyText) }) : checkAttestation({
         att,
         key: null,
         tree,

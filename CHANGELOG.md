@@ -7,6 +7,8 @@
 - Conclusions carry input fingerprints and report `current`, `stale` or `unknown` freshness; model conclusions default to `hypothesis`.
 - Uses built-in `node:sqlite` (Node >= 22.13, or 22.5+ via automatic flag). Damaged or newer stores are refused and left untouched; export/import round-trips. Gates never read the store and all other commands still run on Node 20.
 - New `context` skill. The repository's own policy now has Claude Code implement and the Codex CLI critique and review.
+- `verify` checks ed25519 issued verdicts (from `verify --rerun --issue` or `attest`) against the commit, tree, spec and policy derived from the verified commit; it previously always ended NOT_EVALUATED on an undefined function.
+- A reused review is written to `review.json`, the file gate X reads, replacing an older review there. Accepting an unconfirmed criterion records the reviewer's reasoning.
 
 ## 0.16.3 — 2026-09-11
 

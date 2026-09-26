@@ -6,6 +6,8 @@ import { execFileSync, execSync } from "node:child_process"
 import yaml from "js-yaml"
 import { compileSpec } from "../src/core/spec-compile.mjs"
 import { specDigest } from "../src/core/lock.mjs"
+import crypto from "node:crypto"
+import { signIssued } from "../src/core/attest.mjs"
 
 const BIN = path.resolve("bin/gatectl.mjs")
 // The ledger, the attestation and the signing key live OUTSIDE the target repository — that is
@@ -1448,6 +1450,38 @@ rollback:
     expect(r.out).toContain("re-run `gatectl review`")
   })
 
+  it("a reused review is the review gate X reads", () => {
+    const { root } = scaffold()
+    rda(root, ["review"])
+    expect(rda(root, ["gate", "x"]).code).toBe(0)
+    const file = path.join(stateFeatureDir(root, "f1"), "review.json")
+    const recorded = JSON.parse(fs.readFileSync(file, "utf8"))
+    // An older, different review left where gate X reads.
+    fs.writeFileSync(file, JSON.stringify({ ...recorded, findings: [{ id: "X-009", severity: "high", title: "an older objection" }] }))
+    expect(rda(root, ["gate", "x"]).code).not.toBe(0)
+    expect(rda(root, ["review"]).out).toContain("Reused review")
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual(recorded)
+    expect(rda(root, ["gate", "x"]).code).toBe(0)
+    fs.rmSync(file)
+    rda(root, ["review"])
+    expect(rda(root, ["gate", "x"]).code).toBe(0)
+  })
+
+  it("an accepted criterion keeps the reviewer's reasoning", () => {
+    const acceptance = (claims) => {
+      const { root } = scaffold(reviewJson({ claims: [...claims, claim("INV-01")] }))
+      rda(root, ["review"])
+      expect(rda(root, ["review", "accept", "AC-01", "--reason", "owner accepts for now"]).code).toBe(0)
+      return fs.readFileSync(path.join(stateFeatureDir(root, "f1"), "gates.jsonl"), "utf8").trim().split("\n")
+        .map((l) => JSON.parse(l).entry).find((e) => e.gate === "X-accept")
+    }
+    const reasoned = acceptance([{ ...claim("AC-01"), verdict: "unclear", reasoning: "the expiry branch is never reached" }])
+    expect(reasoned.title).toBe("the expiry branch is never reached")
+    expect(reasoned.reason).toBe("owner accepts for now")
+    const { reasoning, ...silentClaim } = { ...claim("AC-01"), verdict: "unclear" }
+    expect(acceptance([silentClaim]).title).toBe("the reviewer gave no reasoning")
+  })
+
   it("REFUSES a reviewer that answers with prose instead of the structure it was asked for", () => {
     const { root } = scaffold("looks good to me, ship it")
     const r = rda(root, ["review"])
@@ -1561,6 +1595,59 @@ describe("#1 — sandboxed runner, isolated signer", () => {
     const issued = JSON.parse(fs.readFileSync(out, "utf8"))
     expect(issued.alg).toBe("ed25519")
     expect(issued.signer.envelope_digest).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  // An issued verdict is checked against what the verified commit carries — never against itself.
+  it("an issued verdict verifies for its own commit and fails for another", () => {
+    const { root, base, head } = repo()
+    const dir = runner(root); rda(root, ["keygen"])
+    const pub = path.join(root, ".gatectl/attest.pub")
+    const viaRerun = path.join(dir, "issued-rerun.json")
+    expect(rda(root, ["verify", "--commit", head, "--base", base, "--rerun", "--issue", "--out", viaRerun]).code).toBe(0)
+    const ev = evidenceOf(root)
+    rda(root, ["verify", "--commit", head, "--base", base, "--rerun", "--evidence", ev])
+    const viaAttest = path.join(dir, "issued-attest.json")
+    expect(rda(root, ["attest", "--evidence", ev, "--commit", head, "--base", base, "--out", viaAttest]).code).toBe(0)
+    git(root, "commit -q --allow-empty -m empty")
+    const sameTree = execSync("git rev-parse HEAD", { cwd: root, encoding: "utf8" }).trim()
+    const key = crypto.createPrivateKey(fs.readFileSync(fs.readdirSync(path.join(stateFor(root), "keys"))
+      .filter((f) => f.endsWith(".issuer.pem")).map((f) => path.join(stateFor(root), "keys", f))[0]))
+    const check = (file, commit) => rda(root, ["verify", "--commit", commit, "--attestation", file, "--pubkey", pub])
+    const resigned = (file, change) => {
+      const out = `${file}.changed.json`
+      fs.writeFileSync(out, JSON.stringify(signIssued(change(JSON.parse(fs.readFileSync(file, "utf8"))), key)))
+      return out
+    }
+    for (const file of [viaRerun, viaAttest]) {
+      const own = check(file, head)
+      expect(own.code, own.out).toBe(0)
+      expect(own.out).toContain("PASS")
+      const onlyCommit = check(file, sameTree)
+      expect(onlyCommit.code).toBe(1)
+      expect(onlyCommit.out).toContain("issued for commit")
+      expect(onlyCommit.out).not.toContain("attested tree")
+      const other = check(file, base)
+      expect(other.code).toBe(1)
+      expect(other.out).toContain("issued for commit")
+      expect(other.out).toContain("attested tree")
+
+      const spec = check(resigned(file, (r) => ({ ...r, spec_digest: "1".repeat(64) })), head)
+      expect(spec.code).toBe(1)
+      expect(spec.out).toContain("spec")
+      const unstated = check(resigned(file, ({ spec_digest, ...r }) => r), head)
+      expect(unstated.code).toBe(1)
+      expect(unstated.out).toContain("spec")
+      const policy = check(resigned(file, (r) => r.policy_digest
+        ? { ...r, policy_digest: "2".repeat(64) } : { ...r, trusted_policy: { ...r.trusted_policy, digest: "2".repeat(64) } }), head)
+      expect(policy.code).toBe(1)
+      expect(policy.out).toContain("policy")
+      const record = JSON.parse(fs.readFileSync(file, "utf8"))
+      const broken = `${file}.broken.json`
+      fs.writeFileSync(broken, JSON.stringify({ ...record, sig: Buffer.alloc(64, 7).toString("base64") }))
+      const sig = check(broken, head)
+      expect(sig.code).toBe(1)
+      expect(sig.out).toContain("signature does not verify")
+    }
   })
 
   // The attack the two-job split alone does not stop.

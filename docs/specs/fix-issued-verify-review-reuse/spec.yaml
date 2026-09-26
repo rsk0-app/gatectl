@@ -1,0 +1,47 @@
+id: fix-issued-verify-review-reuse
+state: DRAFT
+mvp_ref: gate-decides
+intent: |
+  Repair three defects found in the context-layer inventory (ADR 0001) so existing gate answers are
+  trustworthy before the 0.17 release. (1) `gatectl verify` on an ed25519 issued verdict calls an
+  undefined `checkIssued` and always ends NOT_EVALUATED. (2) `gatectl review` reusing a recorded
+  review for an unchanged candidate writes it to review.md while gate X reads review.json, so X can
+  judge a missing or older review. (3) accepting an unconfirmed criterion records `claim.rationale`,
+  a field reviewers never return, so the ledger loses the reviewer's reasoning.
+invariants:
+  - id: INV-01
+    statement: An issued verdict passes verify only when its signature verifies and its commit, tree, spec digest and policy digest all match values derived from the verified commit, never from the record itself; each mismatch is FAIL with its own named reason. A commit without a spec matches only a record that states no spec (null, or the envelope's all-zero digest).
+  - id: INV-02
+    statement: Gate semantics, policy, HMAC attestation verification and review prompts are otherwise unchanged.
+acceptance_criteria:
+  - id: AC-01
+    statement: A verdict issued by `verify --rerun --issue`, and one signed by `attest` over rerun evidence, verify PASS for their own commit. Verified against an empty commit with the same tree, FAIL names only the commit; against a commit with another tree, FAIL names commit and tree. A record re-signed with a wrong spec digest or wrong policy digest FAILs naming that digest, and a corrupted signature FAILs on the signature.
+    test:
+      file: test/e2e-cli.test.mjs
+      selector: an issued verdict verifies for its own commit and fails for another
+      expected_red: assertion
+  - id: AC-02
+    statement: When the ledger holds a review for the unchanged candidate, `review` reuse always writes that review to review.json — replacing a missing file or an older different review — and gate X then answers from the ledger's review.
+    test:
+      file: test/e2e-cli.test.mjs
+      selector: a reused review is the review gate X reads
+      expected_red: assertion
+  - id: AC-03
+    statement: Accepting an unconfirmed criterion records the reviewer's non-empty reasoning in the ledger entry title, or an explicit "the reviewer gave no reasoning" when it has none, with the owner's --reason kept separately.
+    test:
+      file: test/e2e-cli.test.mjs
+      selector: an accepted criterion keeps the reviewer's reasoning
+      expected_red: assertion
+allowed_paths:
+  - src/core/attest.mjs
+  - src/cli/commands.mjs
+  - test/e2e-cli.test.mjs
+  - plugins/gatectl/bin/gatectl.mjs
+  - CHANGELOG.md
+  - docs/architecture/**
+  - docs/specs/fix-issued-verify-review-reuse/**
+  - docs/specs/ACTIVE
+rollback:
+  strategy: Revert the commit; no stored format changes.
+  notes: null
+blocking_questions: []

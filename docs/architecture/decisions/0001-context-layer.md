@@ -32,9 +32,10 @@ budgets, validation swarm, 25-state lifecycle, gates G0–G15, capability firewa
 in `schemas/*.json`, `spec/*-template.*` and `policies/default-policy.yaml` (no code references
 them). `docs/specs/2026-08-18-*` describes an older layout (`.rda/`, `gates.json`).
 
-Defects found during the inventory (to fix separately):
-- `checkIssued` is called in `commands.mjs` (verify, ed25519 path) but never defined → exit 2.
-- Review reuse writes `review.md` while gate X reads `review.json`.
+Defects found during the inventory:
+- Fixed in `fix-issued-verify-review-reuse`: `checkIssued` was called in `commands.mjs` (verify,
+  ed25519 path) but never defined → exit 2; review reuse wrote `review.md` while gate X reads
+  `review.json`; criterion acceptance lost the reviewer's reasoning.
 - Gate X compares the reviewer's self-reported model name with the implementer — self-description,
   not provider-verified identity.
 - `.github/workflows/gatectl-verify.yml` pins v0.12.0 and old `.rda` paths.

@@ -15,7 +15,7 @@ import { resolveConfigDir, pickEnv, NEW as CONFIG_NEW } from "../core/paths.mjs"
 import { specDigest, appendLock, latestLock } from "../core/lock.mjs"
 import { appendEntry, readLedger } from "../core/ledger.mjs"
 import { ledgerFile, attestationFile, reviewFile, stateDir, loadKey, loadIssuerKey, loadVerifyKey, issuerKeyFile, generateIssuerKeypair } from "../core/authority.mjs"
-import { signAttestation, checkAttestation, verifySignature, signIssued, verifyIssued, environment } from "../core/attest.mjs"
+import { signAttestation, checkAttestation, checkIssued, verifySignature, signIssued, verifyIssued, environment } from "../core/attest.mjs"
 import { SCHEMA_VERSION, validateEnvelope, crossCheck, envelopeDigest, evidenceDigest } from "../core/envelope.mjs"
 import { gateL, gateR, gateGfast, gateGfull, gateC, diffChecks, diagnostics, classifyFailure } from "../core/gates.mjs"
 import { gateX, reviewDigest, validateReview, followUpErrors, PROMPT_VERSION } from "../core/review.mjs"
@@ -1052,7 +1052,7 @@ export const COMMANDS = {
                              review_digest: reviewDigest(review),
                              ...(finding
                                ? { finding: id, severity: finding.severity, title: finding.title }
-                               : { criterion: id, verdict: claim.verdict, title: claim.rationale ?? "" }),
+                               : { criterion: id, verdict: claim.verdict, title: claim.reasoning?.trim() || "the reviewer gave no reasoning" }),
                              reason, at: new Date().toISOString() })
       if (!finding) {
         console.log(`accepted ${id}: the reviewer says "${claim.verdict}"`)
@@ -1082,7 +1082,8 @@ export const COMMANDS = {
     const ledger = authority.ok ? readLedger(authority.path, authority.key) : { ok: false, entries: [] }
     const prior = ledger.ok ? [...ledger.entries].reverse().find(e => e.gate === "Review" && e.digest === f.digest && e.config_digest === configDigest) : null
     if (!args.includes("--fresh") && !args.includes("--full") && prior?.tree === candidate) {
-      const out = reviewFile(root, f.slug)
+      // Written where gate X reads it, replacing whatever older review is there.
+      const out = path.join(path.dirname(reviewFile(root, f.slug)), "review.json")
       fs.mkdirSync(path.dirname(out), { recursive: true })
       fs.writeFileSync(out, JSON.stringify(prior.review, null, 2) + "\n")
       console.log("Reused review for this exact candidate; next: gatectl review-check")
@@ -1459,8 +1460,7 @@ export const COMMANDS = {
       // the verdict says "I re-ran what can be re-run at this commit, and here is what I did
       // not touch". Holding the verdict to the claim's standard would demand it lie.
       const r = att.alg === "ed25519"
-        ? checkIssued({ att, tree, sha, specDigest: digestOfSpec ?? att.spec_digest,
-                        policyDigest: specDigest(policyText) })
+        ? checkIssued({ att, tree, sha, specDigest: digestOfSpec, policyDigest: specDigest(policyText) })
         : checkAttestation({ att, key: null, tree,
                              specDigest: digestOfSpec ?? att.spec_digest, // null only when the commit carries no spec at all
                              policyDigest: specDigest(policyText), requires, skipSignature: true })
