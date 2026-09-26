@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.18.0 — 2026-09-26
 
 - The CLI waits for stdout to drain before exiting, so large piped output (`capabilities --json`) is complete, and a reader that closes early (`| head`) no longer turns into an EPIPE crash; the command keeps its own exit code.
 - `gatectl capabilities`: a readiness map of MVP goals from locks, signed ledgers cross-checked with completion records, test presence and signed receipts for the exact current tree. Goals nobody works on, undeclared goals and placeholder references are listed. `--run` executes what is not yet proven on this version.

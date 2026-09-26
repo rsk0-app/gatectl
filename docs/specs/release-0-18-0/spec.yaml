@@ -1,0 +1,46 @@
+id: release-0-18-0
+state: DRAFT
+mvp_ref: maintenance
+intent: |
+  Prepare gatectl 0.18.0 distribution metadata for the accepted owner goal (7e63060), capability map (7c78c39) and closed-pipe exit fix (abab826), and make the shipped CI template pin the release it belongs to. Publication follows after finish, as authorized by the owner on 2026-09-26: the release commit and an annotated v0.18.0 tag on it are pushed in one `git push --atomic`, then the GitHub release is created; if the push fails nothing is published, and a failed release creation is retried against the existing tag.
+invariants:
+  - id: INV-01
+    statement: Runtime behavior and policy remain unchanged from accepted commit abab826; only distribution metadata, release notes, the CI template's version pin and version consistency verification change.
+acceptance_criteria:
+  - id: AC-01
+    statement: CLI, lockfile, bundled package, both plugin manifests, the Claude marketplace and the gatectl checkout ref in every job of the shipped CI template (and its bundled copy) identify the same bare-semver release, 0.18.0, matching the first dated changelog entry.
+    test:
+      file: test/release-version.test.mjs
+      selector: keeps every distributed version aligned
+      expected_red: assertion
+  - id: AC-02
+    statement: The 0.18.0 changelog section lists the owner goal, capability map and closed-pipe fix, and the README describes goal and capabilities without marking them unreleased.
+    test:
+      file: test/release-version.test.mjs
+      selector: release notes describe what 0.18.0 ships
+      expected_red: assertion
+  - id: AC-03
+    statement: An installed copy of the bundled plugin reports version 0.18.0, runs `goal propose` and `capabilities --json` with its own CLI, and the SessionStart command registered in its hooks.json shows the proposed goal's exact text with draft status.
+    test:
+      file: test/release-version.test.mjs
+      selector: the installed 0.18.0 plugin ships goal and capabilities
+      expected_red: assertion
+allowed_paths:
+  - package.json
+  - package-lock.json
+  - plugins/gatectl/package.json
+  - plugins/gatectl/bin/gatectl.mjs
+  - plugins/gatectl/templates/**
+  - plugins/gatectl/.codex-plugin/plugin.json
+  - plugins/gatectl/.claude-plugin/plugin.json
+  - .claude-plugin/marketplace.json
+  - templates/ci/gatectl-verify.yml
+  - CHANGELOG.md
+  - README.md
+  - test/release-version.test.mjs
+  - docs/specs/release-0-18-0/**
+  - docs/specs/ACTIVE
+rollback:
+  strategy: Install 0.17.0. docs/goal.yaml and the prompt logs are ignored by 0.17.x.
+  notes: No npm registry publication is claimed.
+blocking_questions: []
