@@ -1,0 +1,25 @@
+[
+  {
+    "version": 1,
+    "digest": "fd0e01612c4151cd6c351853a52b1c48f5861be7a0de3852a0be7078104fb208",
+    "at": "2026-09-26T16:26:50.214Z",
+    "tier": "A",
+    "requiredTests": [
+      "test/release-version.test.mjs"
+    ],
+    "allowedPaths": [
+      "package.json",
+      "package-lock.json",
+      "plugins/gatectl/package.json",
+      "plugins/gatectl/bin/gatectl.mjs",
+      "plugins/gatectl/.codex-plugin/plugin.json",
+      "plugins/gatectl/.claude-plugin/plugin.json",
+      ".claude-plugin/marketplace.json",
+      "CHANGELOG.md",
+      "README.md",
+      "test/release-version.test.mjs",
+      "docs/specs/release-0-17-0/**",
+      "docs/specs/ACTIVE"
+    ]
+  }
+]

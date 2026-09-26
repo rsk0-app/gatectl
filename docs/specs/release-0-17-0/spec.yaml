@@ -1,0 +1,43 @@
+id: release-0-17-0
+state: DRAFT
+mvp_ref: maintenance
+intent: Prepare gatectl 0.17.0 distribution metadata for the accepted work-state layer (ad507f3) and gate fixes (ddf28ed), so the plugin that hosts install carries `gatectl work`, the context skill and the SessionStart brief. Publication (push, tag, GitHub release) is a separate post-finish operation that needs the owner's go-ahead.
+invariants:
+  - id: INV-01
+    statement: Runtime behavior and policy remain unchanged from accepted commit ddf28ed; only distribution metadata, release notes and version consistency verification change.
+acceptance_criteria:
+  - id: AC-01
+    statement: CLI, lockfile, bundled package, both plugin manifests and Claude marketplace identify the same bare-semver release version, 0.17.0 for this release, matching the first dated changelog entry.
+    test:
+      file: test/release-version.test.mjs
+      selector: keeps every distributed version aligned
+      expected_red: assertion
+  - id: AC-02
+    statement: The 0.17.0 changelog section lists the work store, loop guard, context skill and the verify/review fixes, and the README no longer marks work context as unreleased.
+    test:
+      file: test/release-version.test.mjs
+      selector: release notes describe what 0.17.0 ships
+      expected_red: assertion
+  - id: AC-03
+    statement: An installed copy of the bundled plugin ships the context skill where both manifests load skills from, runs `work checkpoint` with its own CLI, and its SessionStart hook returns the recorded next action.
+    test:
+      file: test/release-version.test.mjs
+      selector: the installed plugin ships the work layer
+      expected_red: assertion
+allowed_paths:
+  - package.json
+  - package-lock.json
+  - plugins/gatectl/package.json
+  - plugins/gatectl/bin/gatectl.mjs
+  - plugins/gatectl/.codex-plugin/plugin.json
+  - plugins/gatectl/.claude-plugin/plugin.json
+  - .claude-plugin/marketplace.json
+  - CHANGELOG.md
+  - README.md
+  - test/release-version.test.mjs
+  - docs/specs/release-0-17-0/**
+  - docs/specs/ACTIVE
+rollback:
+  strategy: Install 0.16.3. The work store lives outside repositories and is ignored by 0.16.x.
+  notes: No npm registry publication is claimed.
+blocking_questions: []

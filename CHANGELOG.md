@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 — 2026-09-26
 
 - `gatectl work`: per-worktree work store (questions, attempts, conclusions, checkpoints) and `work brief`, so a new session recovers the goal, findings, interrupted work, decisions needed and the next action. SessionStart injects a bounded brief.
 - Loop guard: a repeated hypothesis or action on unchanged input fingerprints, a new attempt beside an unresolved one, or an attempt past three without progress is refused unless a reason is recorded.

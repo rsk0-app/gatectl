@@ -444,7 +444,7 @@ gatectl complete                  # is the feature actually delivered, not just 
 it is advisory to a human or an agent. Stage before you run it: with a staged index, `C` binds
 to the exact tree OID your commit will carry.
 
-## Work context (unreleased)
+## Work context (0.17)
 
 Gates decide whether work may be called done; they do not remember how it went. `gatectl work`
 keeps that memory per worktree — questions, attempts, conclusions and checkpoints — so a new
